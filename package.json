@@ -1,11 +1,12 @@
 {
-  "name": "saaras-tray",
+  "name": "voca",
   "version": "0.1.0",
-  "description": "Tray-app dictation for 10 Indic languages. Codemix Hinglish included.",
+  "description": "Tray-app dictation for 22 Indian languages. Codemix Hinglish included.",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "tauri build --no-bundle",
+    "bundle": "tauri build",
     "tauri": "tauri"
   },
   "dependencies": {

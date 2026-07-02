@@ -1,5 +1,5 @@
 ---
-repo: saaras-tray
+repo: voca
 rank: 3
 score: 0.81
 sprint: 1
@@ -8,7 +8,7 @@ build_estimate: "2–3 weeks for v0.1"
 status: planned
 ---
 
-# PRD v1.0 — saaras-tray
+# PRD v1.0 — voca
 
 > **One-liner:** Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
 >
@@ -20,7 +20,7 @@ status: planned
 
 ## What problem does this solve
 
-Indic dictation on macOS, Windows, and Linux is genuinely broken. Apple's dictation for Hindi/Tamil/Telugu has been bad for years. Google's only works in Chrome. Indians who think and write in their first language type slower than they think — and that's a quality-of-life problem at scale. Saaras v3 is best-in-class for Indic STT including Hinglish/Tanglish codemix. saaras-tray puts it on a global hotkey.
+Indic dictation on macOS, Windows, and Linux is genuinely broken. Apple's dictation for Hindi/Tamil/Telugu has been bad for years. Google's only works in Chrome. Indians who think and write in their first language type slower than they think — and that's a quality-of-life problem at scale. Saaras v3 is best-in-class for Indic STT including Hinglish/Tanglish codemix. voca puts it on a global hotkey.
 
 ## Why this is a shovel and not a product
 
@@ -86,7 +86,7 @@ Configuration order of precedence (highest to lowest):
 
 1. Command-line flags
 2. Environment variables (prefix: `SAARAS_TRAY_*`)
-3. User config file (`~/.config/saaras-tray/config.toml` on Linux/Mac, equivalent on Windows)
+3. User config file (`~/.config/voca/config.toml` on Linux/Mac, equivalent on Windows)
 4. Default config (shipped, but never with secrets)
 
 ---
@@ -118,7 +118,7 @@ replacement.
 
 ### Pre-launch checklist
 
-- [ ] Repo on GitHub at `github.com/sovereign-shovels/saaras-tray`
+- [ ] Repo on GitHub at `github.com/sovereign-shovels/voca`
 - [ ] README polished (see template in `_templates/`)
 - [ ] At least 3 issues / discussions seeded (real ones, not placeholder)
 - [ ] LICENSE, CODE_OF_CONDUCT, CONTRIBUTING present
@@ -130,7 +130,7 @@ replacement.
 Post to: Indian Twitter/X (with Hindi/Tamil/Telugu hashtags), r/India, r/IndiaTech, professional LinkedIn India
 
 Subject template (adjust per channel):
-- Show HN: `Show HN: saaras-tray – Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.`
+- Show HN: `Show HN: voca - Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.`
 - Reddit: `[OSS] Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.` with full post explaining the gap and the build
 - Twitter/X: thread leading with the demo gif
 

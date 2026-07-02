@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>saaras-tray</title>
+  <title>voca</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -113,15 +113,26 @@
   </style>
 </head>
 <body>
-  <h1>saaras-tray</h1>
-  <p class="subtitle">Tray dictation for 10 Indic languages</p>
+  <h1>voca</h1>
+  <p class="subtitle">Tray dictation for 22 Indian languages</p>
 
   <div class="card">
     <h2>Status</h2>
     <div class="status">
       <div class="status-dot ready" id="status-dot"></div>
-      <span id="status-text">Ready — press <span class="hotkey" id="hotkey-display">Cmd+Shift+S</span> to dictate</span>
+      <span id="status-text">Ready — press <span class="hotkey" id="hotkey-display">Ctrl+Alt+Shift+S</span> to dictate</span>
     </div>
+    <p id="hotkey-status" style="margin-top: 8px; color: var(--muted); font-size: 0.8rem;"></p>
+    <button id="test-mic" style="margin-top: 12px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Test mic</button>
+    <button id="dictate-now" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Dictate now</button>
+    <button id="stop-recording" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Stop</button>
+    <button id="reset-recording" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Reset</button>
+    <div style="margin-top: 12px; height: 10px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; background: var(--bg);">
+      <div id="mic-level" style="width: 0%; height: 100%; background: var(--accent); transition: width 80ms linear;"></div>
+    </div>
+    <p id="mic-status" style="margin-top: 8px; color: var(--muted); font-size: 0.8rem;"></p>
+    <textarea id="transcript" readonly style="margin-top: 12px; width: 100%; min-height: 96px; resize: vertical; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.875rem;"></textarea>
+    <button id="copy-transcript" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Copy text</button>
   </div>
 
   <div class="card">
@@ -129,15 +140,29 @@
     <label>
       <span>Primary language</span>
       <select id="language">
+        <option value="unknown">Auto detect</option>
         <option value="hi-IN">Hindi (hi-IN)</option>
-        <option value="ta-IN">Tamil (ta-IN)</option>
-        <option value="te-IN">Telugu (te-IN)</option>
+        <option value="as-IN">Assamese (as-IN)</option>
         <option value="bn-IN">Bengali (bn-IN)</option>
-        <option value="mr-IN">Marathi (mr-IN)</option>
+        <option value="brx-IN">Bodo (brx-IN)</option>
+        <option value="doi-IN">Dogri (doi-IN)</option>
+        <option value="en-IN">English (en-IN)</option>
         <option value="gu-IN">Gujarati (gu-IN)</option>
         <option value="kn-IN">Kannada (kn-IN)</option>
+        <option value="kok-IN">Konkani (kok-IN)</option>
+        <option value="ks-IN">Kashmiri (ks-IN)</option>
+        <option value="mai-IN">Maithili (mai-IN)</option>
         <option value="ml-IN">Malayalam (ml-IN)</option>
+        <option value="mni-IN">Manipuri (mni-IN)</option>
+        <option value="mr-IN">Marathi (mr-IN)</option>
+        <option value="ne-IN">Nepali (ne-IN)</option>
+        <option value="od-IN">Odia (od-IN)</option>
         <option value="pa-IN">Punjabi (pa-IN)</option>
+        <option value="sa-IN">Sanskrit (sa-IN)</option>
+        <option value="sat-IN">Santali (sat-IN)</option>
+        <option value="sd-IN">Sindhi (sd-IN)</option>
+        <option value="ta-IN">Tamil (ta-IN)</option>
+        <option value="te-IN">Telugu (te-IN)</option>
         <option value="ur-IN">Urdu (ur-IN)</option>
       </select>
     </label>
@@ -157,23 +182,47 @@
       </select>
     </label>
     <label>
-      <span>API Key Env Var (for Saaras)</span>
-      <input type="text" id="api-key-env" placeholder="SAARAS_API_KEY" value="SAARAS_API_KEY" />
+      <span>API key env var or pasted key</span>
+      <input type="text" id="api-key-env" placeholder="SAARAS_API_KEY or paste the key" value="SAARAS_API_KEY" />
+    </label>
+  </div>
+
+  <div class="card">
+    <h2>Polish</h2>
+    <label>
+      <span>Grammar and punctuation</span>
+      <select id="polish-mode">
+        <option value="light">Light local cleanup</option>
+        <option value="full">Full grammar polish</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <label>
+      <span>Full polish endpoint</span>
+      <input type="text" id="polish-endpoint" placeholder="OpenAI-compatible /v1/chat/completions URL" />
+    </label>
+    <label>
+      <span>Full polish model</span>
+      <input type="text" id="polish-model" placeholder="Model name for the configured endpoint" />
+    </label>
+    <label>
+      <span>Full polish API key env var or pasted key</span>
+      <input type="text" id="polish-api-key-env" placeholder="Optional" />
     </label>
   </div>
 
   <div class="card">
     <h2>Config</h2>
     <p style="font-size: 0.875rem; color: var(--muted);">
-      Edit <code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;">~/.config/saaras-tray/config.toml</code> for advanced settings.
+      Edit <code style="background: var(--bg); padding: 2px 6px; border-radius: 4px;" id="config-path">...</code> for advanced settings.
     </p>
   </div>
 
   <footer>
-    <a href="https://github.com/sovereign-shovels/saaras-tray">GitHub</a> ·
+    <a href="https://github.com/sovereign-shovels/voca">GitHub</a> ·
     Part of <a href="https://github.com/sovereign-shovels">sovereign-shovels</a>
   </footer>
 
-  <script type="module" src="main.js"></script>
+  <script src="main.js"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-# Knowledge Graph — saaras-tray
+# Knowledge Graph — voca
 
 > Internal documentation hub. As the build progresses, add notes here and
 > link them with [[wikilinks]]. Obsidian's graph view will visualize the

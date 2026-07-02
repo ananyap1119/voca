@@ -1,4 +1,4 @@
-# saaras-tray
+# voca
 
 > Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
 
@@ -57,20 +57,24 @@ Coming soon. For now, build from source.
 - [Rust](https://rustup.rs/) 1.75+
 
 ```bash
-git clone https://github.com/sovereign-shovels/saaras-tray.git
-cd saaras-tray
+git clone https://github.com/sovereign-shovels/voca.git
+cd voca
 
 # Install frontend dependencies
 npm install
 
-# Build desktop app
-npm run tauri build
+# Build desktop app without packaging an installer
+npm run build
 
 # Or run in dev mode
-npm run tauri dev
+npm run dev
+
+# Package an installer when you need one
+npm run bundle
 ```
 
-The built app will be in `src-tauri/target/release/bundle/`.
+The release binary will be in `src-tauri/target/release/voca.exe`.
+Bundled installers, when built, will be in `src-tauri/target/release/bundle/`.
 
 ---
 
@@ -87,7 +91,7 @@ export SAARAS_API_KEY="your-key-here"
 Or set it in your config file:
 
 ```toml
-# ~/.config/saaras-tray/config.toml
+# ~/.config/voca/config.toml
 [provider]
 endpoint = "https://api.sarvam.ai/speech-to-text"
 api_key_env_var = "SAARAS_API_KEY"
@@ -104,7 +108,7 @@ codemix = true
 Set the provider to `local` for a placeholder fallback. Full local Whisper-Indic integration ships in v0.5.
 
 ```toml
-# ~/.config/saaras-tray/config.toml
+# ~/.config/voca/config.toml
 [provider]
 provider_name = "local"
 ```
@@ -124,7 +128,7 @@ export SAARAS_TRAY_HOTKEY="CmdOrCtrl+Shift+S"
 Default: `CmdOrCtrl+Shift+S` (macOS: `Cmd+Shift+S`, Windows/Linux: `Ctrl+Shift+S`)
 
 ```toml
-# ~/.config/saaras-tray/config.toml
+# ~/.config/voca/config.toml
 [provider]
 hotkey = "CmdOrCtrl+Shift+D"
 ```
@@ -167,4 +171,4 @@ Apache 2.0. See [LICENSE](./LICENSE).
 
 This repo is part of the [sovereign-shovels](https://github.com/sovereign-shovels) portfolio of small, focused, sovereign-by-construction AI utilities.
 
-Other shovels: claude-vault, bulbul-studio, saaras-tray, claude-prompts, ollama-cron, mcp-forge, sarvam-pdf, agent-console, sarvam-meet, obsidian-llm, llm-diff, claude-bridge, claude-radio, sarvam-cast.
+Other shovels: claude-vault, bulbul-studio, voca, claude-prompts, ollama-cron, mcp-forge, sarvam-pdf, agent-console, sarvam-meet, obsidian-llm, llm-diff, claude-bridge, claude-radio, sarvam-cast.

@@ -2,6 +2,8 @@
 
 > Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
 
+**Demo:** https://x.com/AnanNo_11/status/2072590289823494479?s=20
+
 **Status:** v0.1 — ready to use.
 
 **Sovereignty:** sovereign-by-construction. BYO endpoint, BYO key. A local-only configuration is documented.

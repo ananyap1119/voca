@@ -6,7 +6,7 @@ sprint: 1
 substrate_anchor: Saaras
 status: ready-to-launch
 v01_acceptance_pct: 95
-last_update: 2026-06-25
+last_update: 2026-07-16
 stars: 0
 dependents: 0
 ---
@@ -32,15 +32,15 @@ Update it as the build progresses.
 ### v0.1
 - [x] Repo initialized
 - [x] Provider abstraction in place
-- [x] Local-only configuration documented
+- [ ] Local-only provider implemented and tested
 - [x] Repo initialized
 - [x] Provider abstraction in place
-- [x] Local-only configuration documented
+- [ ] Local-only provider implemented and tested
 - [x] Core functionality on primary platform (audio capture, Saaras v3 STT, paste)
 - [x] One passing test for main code path
 - [x] CI green
 - [x] README polished
-- [x] Acceptance criteria from [[PRD-v1]] satisfied
+- [x] BYO-key beta acceptance criteria from [[PRD-v1]] satisfied
 - [ ] Launched
 
 ### Post-launch (track if `live`)
@@ -85,6 +85,11 @@ Update it as the build progresses.
 - 2026-06-25 - fixed recording window removed - dictation now records until speech pauses instead of stopping at 30 seconds
 - 2026-06-25 - push-to-talk stop added - holding Alt starts recording, releasing it or pressing Stop ends recording, and paste now targets the previously active window
 - 2026-06-25 - Flow-style keyboard hook added - Windows now uses a low-level hold/release hook for Alt instead of the unreliable global shortcut plugin
+- 2026-07-15 - voca rename completed - project-specific environment variables, documentation, repository metadata, and local paths now use the voca identity
+- 2026-07-15 - BYO-key release path added - Windows credentials now protect user API keys, long recordings are chunked safely, and tagged builds publish an NSIS installer through GitHub Releases
+- 2026-07-16 - BYO-key installer verified - Rust tests pass and an NSIS `v0.2.0` installer builds locally; local-only provider moved to v0.5 so v0.2 can ship as a BYO-key beta
+- 2026-07-16 - provider defaults externalized - Sarvam endpoint and model moved to shipped configuration, and the unimplemented local placeholder now fails explicitly instead of returning fake transcript text
+- 2026-07-16 - BYO-key beta scope approved - v0.2 ships as a Windows prerelease installer where each user supplies their own Sarvam key; local-only support remains scheduled for v0.5
 
 ## Tombstone watch
 

@@ -28,15 +28,23 @@ pub trait SttProvider: Send + Sync {
 pub struct SaarasProvider {
     endpoint: String,
     api_key: Option<String>,
+    model: String,
     language: String,
     codemix: bool,
 }
 
 impl SaarasProvider {
-    pub fn new(endpoint: String, api_key: Option<String>, language: String, codemix: bool) -> Self {
+    pub fn new(
+        endpoint: String,
+        api_key: Option<String>,
+        model: String,
+        language: String,
+        codemix: bool,
+    ) -> Self {
         Self {
             endpoint,
             api_key,
+            model,
             language,
             codemix,
         }
@@ -110,7 +118,7 @@ impl SttProvider for SaarasProvider {
 
         let form = reqwest::multipart::Form::new()
             .part("file", part)
-            .text("model", "saaras:v3")
+            .text("model", self.model.clone())
             .text("mode", self.mode())
             .text("language_code", self.language.clone());
 
@@ -142,23 +150,6 @@ impl SttProvider for SaarasProvider {
     }
 }
 
-pub struct LocalWhisperProvider;
-
-#[async_trait::async_trait]
-impl SttProvider for LocalWhisperProvider {
-    fn name(&self) -> &str {
-        "local-whisper"
-    }
-
-    async fn transcribe(&self, _audio_path: &Path) -> Result<SttResult, String> {
-        Ok(SttResult {
-            text: "[Placeholder - local Whisper fallback in v0.5]".into(),
-            confidence: None,
-            language: Some("auto".into()),
-        })
-    }
-}
-
 pub type SharedProvider = Arc<Mutex<Box<dyn SttProvider>>>;
 
 #[cfg(test)]
@@ -168,21 +159,12 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    #[tokio::test]
-    async fn test_local_whisper_provider() {
-        let provider = LocalWhisperProvider;
-        assert_eq!(provider.name(), "local-whisper");
-
-        let result = provider.transcribe(Path::new("/dev/null")).await.unwrap();
-        assert!(result.text.contains("Placeholder"));
-        assert_eq!(result.language, Some("auto".into()));
-    }
-
     #[test]
     fn test_saaras_provider_name() {
         let provider = SaarasProvider::new(
-            "https://api.sarvam.ai/speech-to-text".into(),
+            "https://example.invalid/speech-to-text".into(),
             Some("dummy".into()),
+            "test-model".into(),
             "hi-IN".into(),
             true,
         );
@@ -192,14 +174,16 @@ mod tests {
     #[test]
     fn test_saaras_provider_modes() {
         let codemix_provider = SaarasProvider::new(
-            "https://api.sarvam.ai/speech-to-text".into(),
+            "https://example.invalid/speech-to-text".into(),
             Some("dummy".into()),
+            "test-model".into(),
             "hi-IN".into(),
             true,
         );
         let transcribe_provider = SaarasProvider::new(
-            "https://api.sarvam.ai/speech-to-text".into(),
+            "https://example.invalid/speech-to-text".into(),
             Some("dummy".into()),
+            "test-model".into(),
             "hi-IN".into(),
             false,
         );
@@ -228,12 +212,12 @@ mod tests {
     #[ignore]
     async fn smoke_sarvam_transcribes_silent_wav() {
         let api_key = std::env::var("SAARAS_API_KEY")
-            .or_else(|_| std::env::var("SAARAS_TRAY_API_KEY"))
             .expect("Set SAARAS_API_KEY to run Sarvam smoke test");
         let audio = silent_wav_path();
         let provider = SaarasProvider::new(
-            "https://api.sarvam.ai/speech-to-text".into(),
+            crate::config::Config::load("voca").endpoint.unwrap(),
             Some(api_key),
+            crate::config::Config::load("voca").model.unwrap(),
             "hi-IN".into(),
             false,
         );

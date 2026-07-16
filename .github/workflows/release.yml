@@ -1,0 +1,39 @@
+name: Release Voca
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build installer and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Voca v__VERSION__"
+          releaseBody: |
+            Install Voca, add your own Sarvam API key, and use system-wide
+            dictation across Windows applications.
+
+            This beta is unsigned, so Windows may show an Unknown Publisher
+            warning during installation.
+          releaseDraft: false
+          prerelease: true
+          args: --bundles nsis

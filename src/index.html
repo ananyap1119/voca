@@ -178,13 +178,15 @@
       <span>STT Provider</span>
       <select id="provider">
         <option value="saaras">Saaras v3 (cloud)</option>
-        <option value="local">Local Whisper (v0.5)</option>
       </select>
     </label>
     <label>
-      <span>API key env var or pasted key</span>
-      <input type="text" id="api-key-env" placeholder="SAARAS_API_KEY or paste the key" value="SAARAS_API_KEY" />
+      <span>Your Sarvam API key</span>
+      <input type="password" id="api-key" placeholder="Paste your API key" autocomplete="off" />
     </label>
+    <button id="save-api-key" style="padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Save key</button>
+    <button id="remove-api-key" style="padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Remove key</button>
+    <p id="api-key-status" style="margin-top: 8px; color: var(--muted); font-size: 0.8rem;">Checking saved key...</p>
   </div>
 
   <div class="card">

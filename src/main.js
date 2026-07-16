@@ -7,7 +7,10 @@ const hotkeyDisplay = document.getElementById('hotkey-display');
 const languageSelect = document.getElementById('language');
 const codemixCheck = document.getElementById('codemix');
 const providerSelect = document.getElementById('provider');
-const apiKeyEnvInput = document.getElementById('api-key-env');
+const apiKeyInput = document.getElementById('api-key');
+const saveApiKeyButton = document.getElementById('save-api-key');
+const removeApiKeyButton = document.getElementById('remove-api-key');
+const apiKeyStatus = document.getElementById('api-key-status');
 const polishModeSelect = document.getElementById('polish-mode');
 const polishEndpointInput = document.getElementById('polish-endpoint');
 const polishModelInput = document.getElementById('polish-model');
@@ -42,7 +45,6 @@ function configPayload() {
     provider_name: providerSelect.value === 'local' ? 'local' : null,
     language: languageSelect.value,
     codemix: codemixCheck.checked,
-    api_key_env_var: apiKeyEnvInput.value.trim() || null,
     polish_mode: polishModeSelect.value,
     polish_endpoint: polishEndpointInput.value.trim() || null,
     polish_model: polishModelInput.value.trim() || null,
@@ -130,10 +132,13 @@ async function loadConfig() {
     const path = await invoke('get_config_path');
     const hotkeyMessage = await invoke('get_hotkey_status');
     configPath.textContent = path;
-    providerSelect.value = cfg.provider_name === 'local' ? 'local' : 'saaras';
+    providerSelect.value = 'saaras';
     if (cfg.language) languageSelect.value = cfg.language;
     if (cfg.codemix !== undefined) codemixCheck.checked = cfg.codemix;
-    if (cfg.api_key_env_var) apiKeyEnvInput.value = cfg.api_key_env_var;
+    const keySaved = await invoke('has_api_key');
+    apiKeyStatus.textContent = keySaved
+      ? 'API key saved securely on this computer'
+      : 'Add your Sarvam API key before dictating';
     polishModeSelect.value = cfg.polish_mode || 'light';
     polishEndpointInput.value = cfg.polish_endpoint || '';
     polishModelInput.value = cfg.polish_model || '';
@@ -150,11 +155,43 @@ async function loadConfig() {
 providerSelect.addEventListener('change', scheduleSave);
 languageSelect.addEventListener('change', scheduleSave);
 codemixCheck.addEventListener('change', scheduleSave);
-apiKeyEnvInput.addEventListener('input', scheduleSave);
 polishModeSelect.addEventListener('change', scheduleSave);
 polishEndpointInput.addEventListener('input', scheduleSave);
 polishModelInput.addEventListener('input', scheduleSave);
 polishApiKeyEnvInput.addEventListener('input', scheduleSave);
+
+saveApiKeyButton.addEventListener('click', async () => {
+  const apiKey = apiKeyInput.value.trim();
+  if (!apiKey) {
+    apiKeyStatus.textContent = 'Paste your Sarvam API key first';
+    return;
+  }
+
+  saveApiKeyButton.disabled = true;
+  apiKeyStatus.textContent = 'Saving securely...';
+  try {
+    const message = await invoke('set_api_key', { apiKey });
+    apiKeyInput.value = '';
+    apiKeyStatus.textContent = message;
+  } catch (e) {
+    apiKeyStatus.textContent = `Could not save key: ${e}`;
+  } finally {
+    saveApiKeyButton.disabled = false;
+  }
+});
+
+removeApiKeyButton.addEventListener('click', async () => {
+  removeApiKeyButton.disabled = true;
+  try {
+    const message = await invoke('clear_api_key');
+    apiKeyInput.value = '';
+    apiKeyStatus.textContent = message;
+  } catch (e) {
+    apiKeyStatus.textContent = `Could not remove key: ${e}`;
+  } finally {
+    removeApiKeyButton.disabled = false;
+  }
+});
 
 void listen('dictation-started', async () => {
   startDictationUi();

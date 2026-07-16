@@ -12,7 +12,7 @@ This repo is **voca** — part of the [sovereign-shovels](../README.md) portfoli
 
 - **Substrate anchor:** Saaras
 - **Utility category:** tray
-- **Tagline:** Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
+- **Tagline:** Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
 - **Sprint:** 1
 - **Estimated build for v0.1:** 2–3 weeks for v0.1
 
@@ -29,7 +29,7 @@ Read the universal philosophy: [[../PHILOSOPHY|Philosophy]].
 In short, every shovel must satisfy all five rules:
 
 1. **Substrate-anchored name** ✓ (this is `voca`)
-2. **Sovereign by construction** — user owns model choice, BYO endpoint, must work with local-only
+2. **Sovereign by construction** - user owns model choice and BYO endpoint/key. v0.2 ships as a BYO-key beta; local-only support is a v0.5 requirement.
 3. **Real demand evidence** — gap is documented, not assumed
 4. **Buildable in 1–3 weeks** — v0.1 estimate is 2–3 weeks for v0.1
 5. **Scope-evolution headroom** — see PRD-v1 for v0.1 → v0.5 → v1.0
@@ -41,7 +41,7 @@ In short, every shovel must satisfy all five rules:
 ### Universal (inherited from [[../NO-NOS|NO-NOS]])
 
 1. NO hardcoded API keys, vendor URLs, or model names in code outside config files.
-2. NO default that requires a sign-up upstream. Tool must work with a local model.
+2. NO hidden default that requires a maintainer-owned upstream account. v0.2 may require the user to bring their own Sarvam key; local-only support must ship before v1.0.
 3. NO telemetry, phone-home, or analytics by default.
 4. NO closed-source runtime dependencies that compromise sovereignty.
 5. NO scope creep into "agent platform" or "general assistant" territory.
@@ -75,7 +75,7 @@ When you (the agent) start work in this repo:
 5. **If a user asks for something that violates a no-no**, push back. Don't comply.
 6. **Commits** follow conventional commits (`feat:`, `fix:`, `docs:`, etc.).
 7. **Branches**: `main` is protected. Work on `feat/<thing>` branches and PR.
-8. **Tests** are required for any code path that ships in v0.1.
+8. **Tests** are required for any code path that ships.
 
 ---
 

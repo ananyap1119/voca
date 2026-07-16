@@ -35,5 +35,5 @@ jobs:
             This beta is unsigned, so Windows may show an Unknown Publisher
             warning during installation.
           releaseDraft: false
-          prerelease: false
+          prerelease: true
           args: --bundles nsis

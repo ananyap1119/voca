@@ -10,7 +10,7 @@ status: planned
 
 # PRD v1.0 — voca
 
-> **One-liner:** Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
+> **One-liner:** Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
 >
 > **Substrate:** Indian professionals, students, content workers — anyone abandoned by Apple/Google's poor Indic dictation
 > **Launch channels:** Indian Twitter/X (with Hindi/Tamil/Telugu hashtags), r/India, r/IndiaTech, professional LinkedIn India
@@ -37,7 +37,7 @@ System tray app + global hotkey. Press hotkey, speak in any of 10 Indic language
 A v0.1 release is publishable to GitHub when ALL of these are true:
 
 - [ ] Core functionality described above works on the primary developer machine.
-- [ ] At least one local-only configuration is documented and tested (no cloud required).
+- [ ] At least one local-only configuration is documented and tested (no cloud required; deferred from v0.2 beta to v0.5).
 - [ ] BYO endpoint / BYO key configuration is documented.
 - [ ] README explains: what it is, who it's for, how to install, how to configure, what it doesn't do.
 - [ ] LICENSE present (Apache 2.0 unless overridden).
@@ -61,7 +61,7 @@ Meeting capture mode. Multi-speaker diarization. Voice command shortcuts.
 
 ### Stack
 
-Tauri (cross-platform tray + global hotkey support is decent in Rust). Bundled audio capture per OS. Saaras v3 WebSocket primary; Whisper-Indic local fallback.
+Tauri (cross-platform tray + global hotkey support is decent in Rust). Bundled audio capture per OS. Saaras/Sarvam STT primary for v0.2 BYO-key beta; Whisper-Indic local fallback by v0.5.
 
 ### Provider abstraction
 
@@ -77,8 +77,7 @@ interface Provider {
 }
 ```
 
-The default config in v0.1 must point to a free, local provider where
-applicable, and document how to swap in any other.
+The v0.2 beta defaults to a BYO-key Sarvam provider with no bundled secret. Local-only inference is deferred to v0.5, and the provider abstraction must keep that path open.
 
 ### Configuration
 
@@ -131,7 +130,7 @@ Post to: Indian Twitter/X (with Hindi/Tamil/Telugu hashtags), r/India, r/IndiaTe
 
 Subject template (adjust per channel):
 - Show HN: `Show HN: voca - Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.`
-- Reddit: `[OSS] Tray-app dictation for 10 Indic languages. Codemix Hinglish included. Apple/Google dictation, but actually good.` with full post explaining the gap and the build
+- Reddit: `[OSS] Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.` with full post explaining the gap and the build
 - Twitter/X: thread leading with the demo gif
 
 ### Week-1 follow-up

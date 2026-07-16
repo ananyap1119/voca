@@ -1,10 +1,10 @@
 [package]
 name = "voca"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tray-app dictation for 22 Indian languages"
 authors = ["Sovereign Shovels"]
 license = "Apache-2.0"
-repository = "https://github.com/sovereign-shovels/voca"
+repository = "https://github.com/ananyap1119/voca"
 edition = "2021"
 rust-version = "1.75"
 
@@ -27,7 +27,7 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 enigo = "0.2"
 async-trait = "0.1"
 toml = "0.8"
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

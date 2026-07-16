@@ -85,7 +85,7 @@ applicable, and document how to swap in any other.
 Configuration order of precedence (highest to lowest):
 
 1. Command-line flags
-2. Environment variables (prefix: `SAARAS_TRAY_*`)
+2. Environment variables (prefix: `VOCA_*`)
 3. User config file (`~/.config/voca/config.toml` on Linux/Mac, equivalent on Windows)
 4. Default config (shipped, but never with secrets)
 
@@ -118,7 +118,7 @@ replacement.
 
 ### Pre-launch checklist
 
-- [ ] Repo on GitHub at `github.com/sovereign-shovels/voca`
+- [ ] Repo on GitHub at `github.com/ananyap1119/voca`
 - [ ] README polished (see template in `_templates/`)
 - [ ] At least 3 issues / discussions seeded (real ones, not placeholder)
 - [ ] LICENSE, CODE_OF_CONDUCT, CONTRIBUTING present

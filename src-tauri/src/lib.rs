@@ -23,12 +23,13 @@ mod keyboard_hook;
 mod postprocess;
 mod stt;
 
-use audio::AudioRecorder;
-use config::Config;
+use audio::{split_wav_for_api, AudioRecorder};
+use config::{delete_stored_api_key, store_api_key, Config};
 use postprocess::polish_transcript;
-use stt::{LocalWhisperProvider, SaarasProvider, SharedProvider, SttResult};
+use stt::{SaarasProvider, SharedProvider, SttResult};
 
 const RECORDING_STALE_AFTER_SECONDS: u64 = 180;
+const SAARAS_REST_CHUNK_SECONDS: u32 = 28;
 
 fn startup_log(message: impl AsRef<str>) {
     let path = std::env::temp_dir().join("voca-startup.log");
@@ -89,33 +90,40 @@ async fn clear_recording(state: &AppState) {
     state.stop_signal.store(false, Ordering::Relaxed);
 }
 
+fn remove_recording_files(audio_path: &std::path::Path, parts: &[std::path::PathBuf]) {
+    for path in parts {
+        if path != audio_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let _ = std::fs::remove_file(audio_path);
+}
+
 async fn request_stop_recording(state: &AppState) {
     state.stop_signal.store(true, Ordering::Relaxed);
 }
 
-fn build_provider(config: &Config) -> Box<dyn stt::SttProvider> {
+fn build_provider(config: &Config) -> Result<Box<dyn stt::SttProvider>, String> {
     if config.provider_name.as_deref() == Some("local") {
-        Box::new(LocalWhisperProvider)
-    } else {
-        let endpoint = config
-            .endpoint
+        return Err("The local provider is not implemented in this release".into());
+    }
+
+    let required = |value: &Option<String>, name: &str| {
+        value
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("https://api.sarvam.ai/speech-to-text")
-            .to_string();
+            .map(str::to_owned)
+            .ok_or_else(|| format!("Missing provider {} in config", name))
+    };
 
-        Box::new(SaarasProvider::new(
-            endpoint,
-            config.api_key(),
-            config
-                .language
-                .clone()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "hi-IN".into()),
-            config.codemix.unwrap_or(true),
-        ))
-    }
+    Ok(Box::new(SaarasProvider::new(
+        required(&config.endpoint, "endpoint")?,
+        config.api_key(),
+        required(&config.model, "model")?,
+        required(&config.language, "language")?,
+        config.codemix.unwrap_or(true),
+    )))
 }
 
 struct WindowCandidate {
@@ -243,6 +251,13 @@ fn reveal_main_window(app: &tauri::AppHandle) {
 }
 
 async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResult, String> {
+    let config = state.config.lock().await.clone();
+    if config.provider_name.as_deref() != Some("local") && config.api_key().is_none() {
+        let message = "Add your Sarvam API key in Voca before dictating";
+        let _ = app.emit("dictation-error", message);
+        return Err(message.into());
+    }
+
     begin_recording(&state, &app).await?;
 
     let _ = app.emit("dictation-started", ());
@@ -276,19 +291,52 @@ async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResu
         ),
     );
 
-    let guard = state.provider.lock().await;
-    let mut result = match guard.transcribe(&audio_path).await {
-        Ok(r) => r,
+    let audio_parts = match split_wav_for_api(&audio_path, SAARAS_REST_CHUNK_SECONDS) {
+        Ok(parts) => parts,
         Err(e) => {
+            let _ = std::fs::remove_file(&audio_path);
             clear_recording(&state).await;
-            let _ = app.emit("dictation-error", format!("Transcription failed: {}", e));
-            return Err(format!("Transcription failed: {}", e));
+            let _ = app.emit("dictation-error", format!("Audio preparation failed: {}", e));
+            return Err(format!("Audio preparation failed: {}", e));
         }
     };
+
+    let guard = state.provider.lock().await;
+    let mut result = SttResult {
+        text: String::new(),
+        confidence: None,
+        language: None,
+    };
+    for (index, part) in audio_parts.iter().enumerate() {
+        if audio_parts.len() > 1 {
+            let _ = app.emit(
+                "dictation-status",
+                format!("Transcribing part {} of {}...", index + 1, audio_parts.len()),
+            );
+        }
+
+        match guard.transcribe(part).await {
+            Ok(part_result) => {
+                if !result.text.is_empty() && !part_result.text.trim().is_empty() {
+                    result.text.push(' ');
+                }
+                result.text.push_str(part_result.text.trim());
+                result.language = result.language.or(part_result.language);
+                result.confidence = result.confidence.or(part_result.confidence);
+            }
+            Err(e) => {
+                drop(guard);
+                remove_recording_files(&audio_path, &audio_parts);
+                clear_recording(&state).await;
+                let _ = app.emit("dictation-error", format!("Transcription failed: {}", e));
+                return Err(format!("Transcription failed: {}", e));
+            }
+        }
+    }
     drop(guard);
+    remove_recording_files(&audio_path, &audio_parts);
 
     let _ = app.emit("dictation-status", "Polishing transcript...");
-    let config = state.config.lock().await.clone();
     result.text = match polish_transcript(&result.text, &config).await {
         Ok(text) => text,
         Err(e) => {
@@ -392,10 +440,33 @@ async fn save_config(state: State<'_, AppState>, config: Config) -> Result<Confi
 
     {
         let mut provider = state.provider.lock().await;
-        *provider = build_provider(&merged);
+        *provider = build_provider(&merged)?;
     }
 
     Ok(merged)
+}
+
+#[tauri::command]
+async fn set_api_key(state: State<'_, AppState>, api_key: String) -> Result<String, String> {
+    store_api_key(&api_key)?;
+    let config = state.config.lock().await.clone();
+    let mut provider = state.provider.lock().await;
+    *provider = build_provider(&config)?;
+    Ok("API key saved securely in Windows Credential Manager".into())
+}
+
+#[tauri::command]
+async fn has_api_key(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.config.lock().await.api_key().is_some())
+}
+
+#[tauri::command]
+async fn clear_api_key(state: State<'_, AppState>) -> Result<String, String> {
+    delete_stored_api_key()?;
+    let config = state.config.lock().await.clone();
+    let mut provider = state.provider.lock().await;
+    *provider = build_provider(&config)?;
+    Ok("Saved API key removed".into())
 }
 
 fn merge_config_update(current: Config, update: Config) -> Config {
@@ -458,7 +529,9 @@ pub fn run() {
     let hotkey_str = config.hotkey.clone().unwrap_or_else(|| "CmdOrCtrl+Shift+S".into());
 
     let state = AppState {
-        provider: Arc::new(Mutex::new(build_provider(&config))),
+        provider: Arc::new(Mutex::new(
+            build_provider(&config).expect("shipped provider configuration must be valid"),
+        )),
         config: Arc::new(Mutex::new(config)),
         recording: Arc::new(Mutex::new(false)),
         recording_started_at: Arc::new(Mutex::new(None)),
@@ -475,6 +548,9 @@ pub fn run() {
             get_config,
             get_config_path,
             save_config,
+            set_api_key,
+            has_api_key,
+            clear_api_key,
             get_hotkey_status,
             get_provider_name,
             test_microphone,
@@ -557,9 +633,9 @@ mod tests {
     #[test]
     fn save_config_update_preserves_hidden_provider_fields() {
         let current = Config {
-            endpoint: Some("https://api.sarvam.ai/speech-to-text".into()),
+            endpoint: Some("https://example.invalid/speech-to-text".into()),
             api_key_env_var: Some("SAARAS_API_KEY".into()),
-            model: Some("saaras:v3".into()),
+            model: Some("test-model".into()),
             language: Some("hi-IN".into()),
             codemix: Some(true),
             hotkey: Some("Ctrl+Alt+Shift+S".into()),
@@ -579,10 +655,10 @@ mod tests {
 
         assert_eq!(
             merged.endpoint.as_deref(),
-            Some("https://api.sarvam.ai/speech-to-text")
+            Some("https://example.invalid/speech-to-text")
         );
         assert_eq!(merged.api_key_env_var.as_deref(), Some("SAARAS_API_KEY"));
-        assert_eq!(merged.model.as_deref(), Some("saaras:v3"));
+        assert_eq!(merged.model.as_deref(), Some("test-model"));
         assert_eq!(merged.language.as_deref(), Some("ta-IN"));
         assert_eq!(merged.codemix, Some(false));
         assert_eq!(merged.hotkey.as_deref(), Some("Ctrl+Alt+Shift+S"));

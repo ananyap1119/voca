@@ -1,6 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use hound::{WavSpec, WavWriter};
+use hound::{SampleFormat as WavSampleFormat, WavReader, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
@@ -21,6 +21,51 @@ pub struct RecordingSummary {
     pub peak_level: f32,
     pub sample_rate: u32,
     pub channels: u16,
+}
+
+pub fn split_wav_for_api(path: &Path, max_seconds: u32) -> Result<Vec<std::path::PathBuf>, String> {
+    if max_seconds == 0 {
+        return Err("Audio chunk duration must be greater than zero".into());
+    }
+
+    let mut reader = WavReader::open(path).map_err(|e| format!("Failed to open recording: {}", e))?;
+    let spec = reader.spec();
+    if spec.bits_per_sample != 16 || spec.sample_format != WavSampleFormat::Int {
+        return Err("Recorded WAV must use 16-bit PCM audio".into());
+    }
+
+    let samples_per_chunk = spec.sample_rate as usize
+        * spec.channels as usize
+        * max_seconds as usize;
+    let samples = reader
+        .samples::<i16>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read recording: {}", e))?;
+
+    if samples.len() <= samples_per_chunk {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("voca-recording");
+    let mut paths = Vec::new();
+
+    for (index, chunk) in samples.chunks(samples_per_chunk).enumerate() {
+        let chunk_path = parent.join(format!("{}-part-{:03}.wav", stem, index + 1));
+        let mut writer = WavWriter::create(&chunk_path, spec)
+            .map_err(|e| format!("Failed to create audio chunk: {}", e))?;
+        for sample in chunk {
+            writer
+                .write_sample(*sample)
+                .map_err(|e| format!("Failed to write audio chunk: {}", e))?;
+        }
+        writer
+            .finalize()
+            .map_err(|e| format!("Failed to finalize audio chunk: {}", e))?;
+        paths.push(chunk_path);
+    }
+
+    Ok(paths)
 }
 
 impl AudioRecorder {
@@ -267,7 +312,8 @@ fn rms(sum: f32, len: usize) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::AudioRecorder;
+    use super::{split_wav_for_api, AudioRecorder};
+    use hound::{WavSpec, WavWriter};
     use std::fs;
 
     #[test]
@@ -294,5 +340,30 @@ mod tests {
     fn rms_detects_signal_level() {
         assert!(super::rms(4.0, 4) > 0.9);
         assert_eq!(super::rms(0.0, 0), 0.0);
+    }
+
+    #[test]
+    fn long_wav_is_split_below_api_limit() {
+        let path = std::env::temp_dir().join("voca-split-test.wav");
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: 100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = WavWriter::create(&path, spec).unwrap();
+        for _ in 0..550 {
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let chunks = split_wav_for_api(&path, 2).unwrap();
+        assert_eq!(chunks.len(), 3);
+        for chunk in &chunks {
+            let reader = hound::WavReader::open(chunk).unwrap();
+            assert!(reader.len() <= 200);
+            let _ = fs::remove_file(chunk);
+        }
+        let _ = fs::remove_file(path);
     }
 }

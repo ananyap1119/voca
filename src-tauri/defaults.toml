@@ -5,5 +5,5 @@ api_key_env_var = "SAARAS_API_KEY"
 model = "saaras:v3"
 language = "hi-IN"
 codemix = true
-hotkey = "Alt"
-polish_mode = "light"
+hotkey = "RightAlt"
+polish_mode = "off"

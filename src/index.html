@@ -103,6 +103,76 @@
       font-size: 0.8rem;
       border: 1px solid var(--border);
     }
+    .recording-indicator {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .transcript-label {
+      display: block;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    textarea {
+      margin-top: 6px;
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.875rem;
+    }
+    .diagnostics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px 16px;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+    }
+    .evaluation-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .evaluation-model {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .evaluation-model h3 {
+      color: var(--accent);
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+    }
+    .evaluation-meta {
+      color: var(--muted);
+      font-size: 0.78rem;
+      margin-top: 6px;
+      white-space: pre-wrap;
+    }
+    .button-row { display: flex; gap: 8px; margin-top: 12px; }
+    button {
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .history-wrap { overflow-x: auto; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    th, td { border: 1px solid var(--border); padding: 6px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); }
+    [hidden] { display: none !important; }
     footer {
       margin-top: 24px;
       text-align: center;
@@ -114,25 +184,75 @@
 </head>
 <body>
   <h1>voca</h1>
-  <p class="subtitle">Tray dictation for 22 Indian languages</p>
+  <p class="subtitle">Windows push-to-talk dictation powered by Sarvam Saaras</p>
 
   <div class="card">
     <h2>Status</h2>
     <div class="status">
       <div class="status-dot ready" id="status-dot"></div>
-      <span id="status-text">Ready — press <span class="hotkey" id="hotkey-display">Ctrl+Alt+Shift+S</span> to dictate</span>
+      <span id="status-text">Ready — hold <span class="hotkey" id="hotkey-display">Right Alt</span> to dictate</span>
     </div>
     <p id="hotkey-status" style="margin-top: 8px; color: var(--muted); font-size: 0.8rem;"></p>
     <button id="test-mic" style="margin-top: 12px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Test mic</button>
     <button id="dictate-now" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Dictate now</button>
     <button id="stop-recording" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Stop</button>
     <button id="reset-recording" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Reset</button>
-    <div style="margin-top: 12px; height: 10px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; background: var(--bg);">
-      <div id="mic-level" style="width: 0%; height: 100%; background: var(--accent); transition: width 80ms linear;"></div>
-    </div>
+    <div id="recording-indicator" class="recording-indicator">Not recording</div>
     <p id="mic-status" style="margin-top: 8px; color: var(--muted); font-size: 0.8rem;"></p>
-    <textarea id="transcript" readonly style="margin-top: 12px; width: 100%; min-height: 96px; resize: vertical; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.875rem;"></textarea>
-    <button id="copy-transcript" style="margin-top: 8px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">Copy text</button>
+    <div id="normal-results">
+      <span class="transcript-label">RAW SARVAM</span>
+      <textarea id="raw-transcript" readonly></textarea>
+      <span class="transcript-label">FINAL OUTPUT</span>
+      <textarea id="final-transcript" readonly></textarea>
+      <button id="copy-transcript" style="margin-top: 8px;">Copy final output</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Diagnostics</h2>
+    <div id="diagnostics" class="diagnostics"><span>No completed dictation yet</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Evaluation</h2>
+    <label class="toggle">
+      <input type="checkbox" id="evaluation-mode" />
+      <span>Evaluation mode: V3 vs V4</span>
+    </label>
+    <label id="expected-text-row" hidden>
+      <span>Expected / intended sentence</span>
+      <textarea id="expected-text" placeholder="Optional; kept in memory and never sent to Sarvam"></textarea>
+    </label>
+    <div id="evaluation-results" hidden>
+      <div class="evaluation-grid">
+        <section class="evaluation-model">
+          <h3>SAARAS V3</h3>
+          <textarea id="evaluation-v3-transcript" readonly></textarea>
+          <div id="evaluation-v3-meta" class="evaluation-meta"></div>
+        </section>
+        <section class="evaluation-model">
+          <h3>SAARAS V4</h3>
+          <textarea id="evaluation-v4-transcript" readonly></textarea>
+          <div id="evaluation-v4-meta" class="evaluation-meta"></div>
+        </section>
+      </div>
+      <span class="transcript-label">COMPARISON</span>
+      <div id="evaluation-comparison" class="diagnostics"></div>
+    </div>
+    <div class="button-row">
+      <button id="refresh-evaluation">Refresh evaluation results</button>
+      <button id="export-evaluation">Export evaluation results</button>
+      <button id="clear-evaluation">Clear evaluation session</button>
+    </div>
+    <p id="evaluation-status" class="evaluation-meta">Evaluation mode is off. No results are persisted automatically.</p>
+    <div class="history-wrap">
+      <table>
+        <thead>
+          <tr><th>Run</th><th>Expected</th><th>V3 output</th><th>V4 output</th><th>V3 ms</th><th>V4 ms</th></tr>
+        </thead>
+        <tbody id="evaluation-history"></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card">
@@ -194,9 +314,9 @@
     <label>
       <span>Grammar and punctuation</span>
       <select id="polish-mode">
+        <option value="off" selected>Off (raw Sarvam output)</option>
         <option value="light">Light local cleanup</option>
         <option value="full">Full grammar polish</option>
-        <option value="off">Off</option>
       </select>
     </label>
     <label>
@@ -221,10 +341,11 @@
   </div>
 
   <footer>
-    <a href="https://github.com/sovereign-shovels/voca">GitHub</a> ·
-    Part of <a href="https://github.com/sovereign-shovels">sovereign-shovels</a>
+    <a href="https://github.com/ananyap1119/voca">GitHub</a> ·
+    Part of <a href="https://github.com/sovereign-shovels">sovereign-shovels</a> Â·
+    <span id="frontend-build">evaluation-ui-3</span>
   </footer>
 
-  <script src="main.js"></script>
+  <script src="main.js?v=20260816-evaluation-ui-3"></script>
 </body>
 </html>

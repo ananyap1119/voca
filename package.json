@@ -1,7 +1,7 @@
 {
   "name": "voca",
   "version": "0.2.0",
-  "description": "Tray-app dictation for 22 Indian languages. Codemix Hinglish included.",
+  "description": "Windows push-to-talk dictation prototype powered by Sarvam Saaras.",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",

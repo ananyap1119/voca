@@ -28,11 +28,7 @@ struct TomlConfig {
 
 impl Config {
     fn default_hotkey() -> String {
-        if cfg!(target_os = "windows") {
-            "Alt".into()
-        } else {
-            "Alt".into()
-        }
+        "RightAlt".into()
     }
 
     pub fn load(app_name: &str) -> Self {
@@ -73,16 +69,21 @@ impl Config {
             merged.codemix = Some(v == "true" || v == "1");
         }
         merged.hotkey = env("HOTKEY").or(merged.hotkey);
-        if cfg!(target_os = "windows")
-            && merged.hotkey.as_deref() == Some("Ctrl+Alt+Shift+S")
-        {
-            merged.hotkey = Some(Self::default_hotkey());
+        if cfg!(target_os = "windows") {
+            let unsafe_legacy_hotkey = merged.hotkey.as_deref().is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "alt" | "leftalt" | "ctrl+alt+shift+s"
+                )
+            });
+            if unsafe_legacy_hotkey {
+                merged.hotkey = Some(Self::default_hotkey());
+            }
         }
         merged.polish_mode = env("POLISH_MODE").or(merged.polish_mode);
         merged.polish_endpoint = env("POLISH_ENDPOINT").or(merged.polish_endpoint);
         merged.polish_model = env("POLISH_MODEL").or(merged.polish_model);
-        merged.polish_api_key_env_var =
-            env("POLISH_API_KEY_ENV").or(merged.polish_api_key_env_var);
+        merged.polish_api_key_env_var = env("POLISH_API_KEY_ENV").or(merged.polish_api_key_env_var);
 
         if merged.hotkey.is_none() {
             merged.hotkey = Some(Self::default_hotkey());
@@ -118,7 +119,11 @@ impl Config {
             env::var("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .ok()
-                .or_else(|| env::var("HOME").map(|home| PathBuf::from(home).join(".config")).ok())
+                .or_else(|| {
+                    env::var("HOME")
+                        .map(|home| PathBuf::from(home).join(".config"))
+                        .ok()
+                })
         }
     }
 
@@ -163,7 +168,8 @@ impl Config {
     }
 
     pub fn save(&self, app_name: &str) -> Result<PathBuf, String> {
-        let path = Self::path(app_name).ok_or_else(|| "Unable to resolve config path".to_string())?;
+        let path =
+            Self::path(app_name).ok_or_else(|| "Unable to resolve config path".to_string())?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config directory: {}", e))?;
@@ -191,10 +197,16 @@ pub fn store_api_key(secret: &str) -> Result<(), String> {
         return Err("Enter a valid Sarvam API key".into());
     }
 
-    let mut target = CREDENTIAL_TARGET.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-    let mut username = "voca-user".encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let mut target = CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut username = "voca-user"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
     let mut blob = secret.as_bytes().to_vec();
-    let mut credential = CREDENTIALW {
+    let credential = CREDENTIALW {
         Type: CRED_TYPE_GENERIC,
         TargetName: PWSTR(target.as_mut_ptr()),
         CredentialBlobSize: blob.len() as u32,
@@ -204,8 +216,12 @@ pub fn store_api_key(secret: &str) -> Result<(), String> {
         ..Default::default()
     };
 
-    unsafe { CredWriteW(&mut credential, 0) }
-        .map_err(|e| format!("Unable to save API key in Windows Credential Manager: {}", e))
+    unsafe { CredWriteW(&credential, 0) }.map_err(|e| {
+        format!(
+            "Unable to save API key in Windows Credential Manager: {}",
+            e
+        )
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -221,7 +237,10 @@ pub fn stored_api_key() -> Result<Option<String>, String> {
         CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
     };
 
-    let target = CREDENTIAL_TARGET.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let target = CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
     let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
     if let Err(error) = unsafe {
         CredReadW(
@@ -234,7 +253,10 @@ pub fn stored_api_key() -> Result<Option<String>, String> {
         if error.code() == ERROR_NOT_FOUND.to_hresult() {
             return Ok(None);
         }
-        return Err(format!("Unable to read API key from Windows Credential Manager: {}", error));
+        return Err(format!(
+            "Unable to read API key from Windows Credential Manager: {}",
+            error
+        ));
     }
 
     if credential.is_null() {
@@ -243,10 +265,8 @@ pub fn stored_api_key() -> Result<Option<String>, String> {
 
     let secret = unsafe {
         let value = &*credential;
-        let bytes = std::slice::from_raw_parts(
-            value.CredentialBlob,
-            value.CredentialBlobSize as usize,
-        );
+        let bytes =
+            std::slice::from_raw_parts(value.CredentialBlob, value.CredentialBlobSize as usize);
         let decoded = String::from_utf8(bytes.to_vec())
             .map_err(|_| "Stored API key is not valid UTF-8".to_string());
         CredFree(credential.cast());
@@ -266,7 +286,10 @@ pub fn delete_stored_api_key() -> Result<(), String> {
     use windows::Win32::Foundation::ERROR_NOT_FOUND;
     use windows::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
 
-    let target = CREDENTIAL_TARGET.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let target = CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
     match unsafe { CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, None) } {
         Ok(()) => Ok(()),
         Err(error) if error.code() == ERROR_NOT_FOUND.to_hresult() => Ok(()),
@@ -310,7 +333,24 @@ mod tests {
         let config = Config::load("voca-defaults-test");
 
         assert_eq!(config.provider_name.as_deref(), Some("sarvam"));
-        assert!(config.endpoint.as_deref().is_some_and(|value| value.starts_with("https://")));
-        assert!(config.model.as_deref().is_some_and(|value| !value.is_empty()));
+        assert!(config
+            .endpoint
+            .as_deref()
+            .is_some_and(|value| value.starts_with("https://")));
+        assert!(config
+            .model
+            .as_deref()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(config.hotkey.as_deref(), Some("RightAlt"));
+        assert_eq!(config.polish_mode.as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn unsafe_legacy_alt_default_migrates_to_right_alt() {
+        env::set_var("VOCA_HOTKEY_MIGRATION_TEST_HOTKEY", "Alt");
+        let config = Config::load("voca-hotkey-migration-test");
+        env::remove_var("VOCA_HOTKEY_MIGRATION_TEST_HOTKEY");
+
+        assert_eq!(config.hotkey.as_deref(), Some("RightAlt"));
     }
 }

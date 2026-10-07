@@ -1,5 +1,6 @@
 use enigo::{Enigo, Keyboard, Settings};
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -8,27 +9,26 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, State, WebviewUrl};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::sync::Mutex;
-use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, MoveWindow,
-    SetForegroundWindow, SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST, SW_RESTORE,
-    SW_SHOW, SWP_SHOWWINDOW,
+    GetForegroundWindow, IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
 };
 
 mod audio;
 mod config;
+mod evaluation;
 mod keyboard_hook;
 mod postprocess;
 mod stt;
 
 use audio::{split_wav_for_api, AudioRecorder};
 use config::{delete_stored_api_key, store_api_key, Config};
+use evaluation::{
+    evaluate_models, session_to_csv, EvaluationMetadata, EvaluationRun, EvaluationSession,
+};
 use postprocess::polish_transcript;
 use stt::{SaarasProvider, SharedProvider, SttResult};
 
-const RECORDING_STALE_AFTER_SECONDS: u64 = 180;
 const SAARAS_REST_CHUNK_SECONDS: u32 = 28;
 
 fn startup_log(message: impl AsRef<str>) {
@@ -47,60 +47,126 @@ fn startup_log(message: impl AsRef<str>) {
 struct AppState {
     provider: SharedProvider,
     config: Arc<Mutex<Config>>,
-    recording: Arc<Mutex<bool>>,
-    recording_started_at: Arc<Mutex<Option<Instant>>>,
-    stop_signal: Arc<AtomicBool>,
-    paste_target_hwnd: Arc<Mutex<Option<usize>>>,
+    recording: Arc<Mutex<RecordingLifecycle>>,
+    next_recording_id: Arc<AtomicU64>,
     hotkey_status: Arc<Mutex<String>>,
+    evaluation: Arc<Mutex<EvaluationSession>>,
 }
 
-async fn begin_recording(state: &AppState, app: &tauri::AppHandle) -> Result<(), String> {
-    let mut rec = state.recording.lock().await;
-    if *rec {
-        let mut started_at = state.recording_started_at.lock().await;
-        if started_at
-            .map(|started| started.elapsed() > Duration::from_secs(RECORDING_STALE_AFTER_SECONDS))
-            .unwrap_or(true)
-        {
-            *rec = false;
-            *started_at = None;
-            let _ = app.emit(
-                "dictation-status",
-                "Recovered stale recording state. Starting again...",
-            );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HotkeyAction {
+    NormalDictation,
+    Evaluation,
+}
+
+fn hotkey_action(evaluation: &EvaluationSession) -> HotkeyAction {
+    if evaluation.enabled {
+        HotkeyAction::Evaluation
+    } else {
+        HotkeyAction::NormalDictation
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordingPhase {
+    Recording,
+    Stopping,
+}
+
+#[derive(Debug)]
+struct ActiveRecording {
+    id: u64,
+    phase: RecordingPhase,
+    stop_signal: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct RecordingLifecycle {
+    active: Option<ActiveRecording>,
+}
+
+#[derive(Debug, Clone)]
+struct RecordingSession {
+    id: u64,
+    stop_signal: Arc<AtomicBool>,
+    paste_target_hwnd: Option<usize>,
+}
+
+impl RecordingLifecycle {
+    fn begin(
+        &mut self,
+        id: u64,
+        stop_signal: Arc<AtomicBool>,
+        paste_target_hwnd: Option<usize>,
+    ) -> Result<RecordingSession, String> {
+        if let Some(active) = self.active.as_ref() {
+            let message = match active.phase {
+                RecordingPhase::Recording => "Already recording",
+                RecordingPhase::Stopping => "The previous recording is still shutting down",
+            };
+            return Err(message.into());
+        }
+
+        self.active = Some(ActiveRecording {
+            id,
+            phase: if stop_signal.load(Ordering::Acquire) {
+                RecordingPhase::Stopping
+            } else {
+                RecordingPhase::Recording
+            },
+            stop_signal: stop_signal.clone(),
+        });
+        Ok(RecordingSession {
+            id,
+            stop_signal,
+            paste_target_hwnd,
+        })
+    }
+
+    fn request_stop(&mut self) -> bool {
+        if let Some(active) = self.active.as_mut() {
+            active.phase = RecordingPhase::Stopping;
+            active.stop_signal.store(true, Ordering::Release);
+            true
         } else {
-            let _ = app.emit(
-                "dictation-status",
-                "Already recording. Wait for the current capture to finish, or press Reset.",
-            );
-            return Err("Already recording".into());
+            false
         }
     }
 
-    state.stop_signal.store(false, Ordering::Relaxed);
-    *state.paste_target_hwnd.lock().await = unsafe { Some(GetForegroundWindow().0 as usize) };
-    *rec = true;
-    *state.recording_started_at.lock().await = Some(Instant::now());
-    Ok(())
-}
-
-async fn clear_recording(state: &AppState) {
-    *state.recording.lock().await = false;
-    *state.recording_started_at.lock().await = None;
-    state.stop_signal.store(false, Ordering::Relaxed);
-}
-
-fn remove_recording_files(audio_path: &std::path::Path, parts: &[std::path::PathBuf]) {
-    for path in parts {
-        if path != audio_path {
-            let _ = std::fs::remove_file(path);
+    fn finish(&mut self, id: u64) -> bool {
+        if self.active.as_ref().is_some_and(|active| active.id == id) {
+            self.active = None;
+            true
+        } else {
+            false
         }
     }
-    let _ = std::fs::remove_file(audio_path);
+
+    fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
 }
 
-async fn request_stop_recording(state: &AppState) {
-    state.stop_signal.store(true, Ordering::Relaxed);
+async fn begin_recording(
+    state: &AppState,
+    initially_stopped: bool,
+) -> Result<RecordingSession, String> {
+    let id = state.next_recording_id.fetch_add(1, Ordering::Relaxed);
+    let stop_signal = Arc::new(AtomicBool::new(initially_stopped));
+    let paste_target_hwnd = unsafe { Some(GetForegroundWindow().0 as usize) };
+    state
+        .recording
+        .lock()
+        .await
+        .begin(id, stop_signal, paste_target_hwnd)
+}
+
+async fn finish_recording(state: &AppState, id: u64) {
+    state.recording.lock().await.finish(id);
+}
+
+async fn request_stop_recording(state: &AppState) -> bool {
+    state.recording.lock().await.request_stop()
 }
 
 fn build_provider(config: &Config) -> Result<Box<dyn stt::SttProvider>, String> {
@@ -126,49 +192,26 @@ fn build_provider(config: &Config) -> Result<Box<dyn stt::SttProvider>, String> 
     )))
 }
 
-struct WindowCandidate {
-    hwnd: HWND,
-    area: i64,
-}
+fn restore_paste_target(hwnd_value: Option<usize>) -> Result<(), String> {
+    let value = hwnd_value.filter(|value| *value != 0).ok_or_else(|| {
+        "The application that was focused before recording is no longer available".to_string()
+    })?;
+    let hwnd = HWND(value as *mut core::ffi::c_void);
 
-unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let candidates = &mut *(lparam.0 as *mut Vec<WindowCandidate>);
-    let mut pid = 0u32;
-    let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    if pid != std::process::id() {
-        return BOOL(1);
-    }
-
-    let mut rect = RECT::default();
-    if GetWindowRect(hwnd, &mut rect).is_ok() {
-        let width = (rect.right - rect.left) as i64;
-        let height = (rect.bottom - rect.top) as i64;
-        let area = width.saturating_mul(height);
-        candidates.push(WindowCandidate { hwnd, area });
-    }
-
-    BOOL(1)
-}
-
-fn best_window_handle() -> Option<HWND> {
-    let mut candidates: Vec<WindowCandidate> = Vec::new();
     unsafe {
-        let _ = EnumWindows(Some(enum_windows_proc), LPARAM(&mut candidates as *mut _ as isize));
-    }
-    candidates.into_iter().max_by_key(|c| c.area).map(|c| c.hwnd)
-}
-
-fn restore_paste_target(hwnd_value: Option<usize>) {
-    if let Some(value) = hwnd_value {
-        if value != 0 {
-            let hwnd = HWND(value as *mut core::ffi::c_void);
-            unsafe {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-                let _ = SetForegroundWindow(hwnd);
-            }
-            std::thread::sleep(Duration::from_millis(80));
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return Err("The original paste target window is no longer valid".into());
         }
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = SetForegroundWindow(hwnd);
     }
+    std::thread::sleep(Duration::from_millis(100));
+
+    if unsafe { GetForegroundWindow() } != hwnd {
+        return Err("The original paste target did not become active".into());
+    }
+
+    Ok(())
 }
 
 fn build_main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
@@ -189,213 +232,368 @@ fn reveal_main_window(app: &tauri::AppHandle) {
         startup_log("main window already exists");
         let _ = window.show();
         let _ = window.unminimize();
-        if let Ok(hwnd) = window.hwnd() {
-            unsafe {
-                let fg = GetForegroundWindow();
-                let current = GetCurrentThreadId();
-                let fg_thread = GetWindowThreadProcessId(fg, None);
-                let _ = AttachThreadInput(current, fg_thread, true);
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-                let _ = ShowWindow(hwnd, SW_SHOW);
-                let _ = MoveWindow(hwnd, 80, 80, 1200, 800, true);
-                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 80, 80, 1200, 800, SWP_SHOWWINDOW);
-                let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 80, 80, 1200, 800, SWP_SHOWWINDOW);
-                let _ = SetForegroundWindow(hwnd);
-                let _ = AttachThreadInput(current, fg_thread, false);
-            }
-        } else {
-            let _ = window.set_focus();
-        }
+        let _ = window.set_focus();
         return;
     }
 
     match build_main_window(app) {
         Ok(window) => {
-        startup_log("main window built");
-        let _ = window.set_title("voca");
-        let _ = window.show();
-        let _ = window.unminimize();
-        if let Ok(hwnd) = window.hwnd() {
-            unsafe {
-                let fg = GetForegroundWindow();
-                let current = GetCurrentThreadId();
-                let fg_thread = GetWindowThreadProcessId(fg, None);
-                let _ = AttachThreadInput(current, fg_thread, true);
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-                let _ = ShowWindow(hwnd, SW_SHOW);
-                let _ = MoveWindow(hwnd, 80, 80, 1200, 800, true);
-                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 80, 80, 1200, 800, SWP_SHOWWINDOW);
-                let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 80, 80, 1200, 800, SWP_SHOWWINDOW);
-                let _ = SetForegroundWindow(hwnd);
-                let _ = AttachThreadInput(current, fg_thread, false);
-            }
-        } else {
+            startup_log("main window built");
+            let _ = window.set_title("voca");
+            let _ = window.show();
+            let _ = window.unminimize();
             let _ = window.set_focus();
-        }
         }
         Err(e) => {
             startup_log(format!("main window build failed: {}", e));
         }
     }
-
-    if let Some(hwnd) = best_window_handle() {
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-            let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = MoveWindow(hwnd, 80, 80, 1200, 800, true);
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 80, 80, 1200, 800, SWP_SHOWWINDOW);
-            let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 80, 80, 1200, 800, SWP_SHOWWINDOW);
-            let _ = SetForegroundWindow(hwnd);
-        }
-    }
 }
 
-async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResult, String> {
-    let config = state.config.lock().await.clone();
-    if config.provider_name.as_deref() != Some("local") && config.api_key().is_none() {
-        let message = "Add your Sarvam API key in Voca before dictating";
-        let _ = app.emit("dictation-error", message);
-        return Err(message.into());
+#[derive(Debug, Clone, Serialize)]
+struct DictationDiagnostics {
+    duration_ms: u64,
+    chunk_count: usize,
+    sarvam_request_ms: u64,
+    postprocess_ms: u64,
+    paste_ms: u64,
+    total_after_recording_ms: u64,
+    selected_language_code: String,
+    codemix: bool,
+    returned_language_code: Option<String>,
+    model: String,
+    sample_rate: u32,
+    channel_count: u16,
+    peak_level_percent: f32,
+    insertion_succeeded: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DictationResult {
+    raw_transcript: String,
+    final_transcript: String,
+    diagnostics: DictationDiagnostics,
+}
+
+fn append_sarvam_chunk(assembled: &mut String, chunk: &str) {
+    if !assembled.is_empty()
+        && !chunk.is_empty()
+        && !assembled.chars().last().is_some_and(char::is_whitespace)
+        && !chunk.chars().next().is_some_and(char::is_whitespace)
+    {
+        assembled.push(' ');
     }
+    assembled.push_str(chunk);
+}
 
-    begin_recording(&state, &app).await?;
+fn create_recording_temp_dir() -> Result<tempfile::TempDir, String> {
+    tempfile::Builder::new()
+        .prefix("voca-dictation-")
+        .tempdir()
+        .map_err(|e| format!("Unable to create temporary audio directory: {}", e))
+}
 
-    let _ = app.emit("dictation-started", ());
-    let _ = app.emit("dictation-status", "Recording audio...");
+fn paste_from_clipboard(paste_target: Option<usize>) -> Result<(), String> {
+    restore_paste_target(paste_target)?;
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("Unable to initialize keyboard input: {}", e))?;
 
-    let temp_dir = std::env::temp_dir();
-    let audio_path = temp_dir.join("voca-recording.wav");
+    enigo
+        .key(enigo::Key::Control, enigo::Direction::Press)
+        .map_err(|e| format!("Unable to press Ctrl for paste: {}", e))?;
+    let paste_result = enigo
+        .key(enigo::Key::Unicode('v'), enigo::Direction::Click)
+        .map_err(|e| format!("Unable to send Ctrl+V: {}", e));
+    let release_result = enigo
+        .key(enigo::Key::Control, enigo::Direction::Release)
+        .map_err(|e| format!("Unable to release Ctrl after paste: {}", e));
+
+    paste_result?;
+    release_result?;
+    Ok(())
+}
+
+async fn run_dictation_session(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    config: &Config,
+    session: &RecordingSession,
+) -> Result<DictationResult, String> {
+    let temp_dir = create_recording_temp_dir()?;
+    let audio_path = temp_dir.path().join("recording.wav");
 
     let recorder = AudioRecorder::new();
-    let summary = match recorder.record_until_silence_or_stop(&audio_path, state.stop_signal.clone()) {
-        Ok(summary) => summary,
-        Err(e) => {
-            clear_recording(&state).await;
-            let _ = app.emit("dictation-error", format!("Recording failed: {}", e));
-            return Err(format!("Recording failed: {}", e));
-        }
-    };
+    let summary = recorder
+        .record_until_silence_or_stop(&audio_path, session.stop_signal.clone())
+        .map_err(|e| format!("Recording failed: {}", e))?;
 
+    if !summary.speech_detected {
+        return Err("No speech detected; nothing was sent to Sarvam".into());
+    }
+
+    let after_recording_started = Instant::now();
     let audio_size = std::fs::metadata(&audio_path)
-        .map(|m| m.len())
+        .map(|metadata| metadata.len())
         .unwrap_or_default();
     let _ = app.emit(
         "dictation-status",
         format!(
-            "Recorded {:.1}s ({} KB, {} Hz, {} ch, peak {:.0}%). Sending to Sarvam...",
+            "Recorded {:.1}s ({} KB, {} Hz, {} ch). Sending to Sarvam...",
             summary.duration_ms as f32 / 1000.0,
             audio_size / 1024,
             summary.sample_rate,
             summary.channels,
-            summary.peak_level * 100.0
         ),
     );
 
-    let audio_parts = match split_wav_for_api(&audio_path, SAARAS_REST_CHUNK_SECONDS) {
-        Ok(parts) => parts,
-        Err(e) => {
-            let _ = std::fs::remove_file(&audio_path);
-            clear_recording(&state).await;
-            let _ = app.emit("dictation-error", format!("Audio preparation failed: {}", e));
-            return Err(format!("Audio preparation failed: {}", e));
-        }
-    };
+    let audio_parts = split_wav_for_api(&audio_path, SAARAS_REST_CHUNK_SECONDS)
+        .map_err(|e| format!("Audio preparation failed: {}", e))?;
+    let chunk_count = audio_parts.len();
 
+    let sarvam_started = Instant::now();
     let guard = state.provider.lock().await;
-    let mut result = SttResult {
+    let mut raw_result = SttResult {
         text: String::new(),
         confidence: None,
         language: None,
+        language_probability: None,
     };
     for (index, part) in audio_parts.iter().enumerate() {
-        if audio_parts.len() > 1 {
+        if chunk_count > 1 {
             let _ = app.emit(
                 "dictation-status",
-                format!("Transcribing part {} of {}...", index + 1, audio_parts.len()),
+                format!("Transcribing part {} of {}...", index + 1, chunk_count),
             );
         }
 
-        match guard.transcribe(part).await {
-            Ok(part_result) => {
-                if !result.text.is_empty() && !part_result.text.trim().is_empty() {
-                    result.text.push(' ');
-                }
-                result.text.push_str(part_result.text.trim());
-                result.language = result.language.or(part_result.language);
-                result.confidence = result.confidence.or(part_result.confidence);
-            }
-            Err(e) => {
-                drop(guard);
-                remove_recording_files(&audio_path, &audio_parts);
-                clear_recording(&state).await;
-                let _ = app.emit("dictation-error", format!("Transcription failed: {}", e));
-                return Err(format!("Transcription failed: {}", e));
-            }
-        }
+        let part_result = guard
+            .transcribe(part)
+            .await
+            .map_err(|e| format!("Transcription failed: {}", e))?;
+        append_sarvam_chunk(&mut raw_result.text, &part_result.text);
+        raw_result.language = raw_result.language.or(part_result.language);
+        raw_result.confidence = raw_result.confidence.or(part_result.confidence);
+        raw_result.language_probability = raw_result
+            .language_probability
+            .or(part_result.language_probability);
     }
     drop(guard);
-    remove_recording_files(&audio_path, &audio_parts);
+    let sarvam_request_ms = sarvam_started.elapsed().as_millis() as u64;
 
-    let _ = app.emit("dictation-status", "Polishing transcript...");
-    result.text = match polish_transcript(&result.text, &config).await {
+    let _ = app.emit("dictation-status", "Preparing final output...");
+    let postprocess_started = Instant::now();
+    let final_transcript = match polish_transcript(&raw_result.text, config).await {
         Ok(text) => text,
         Err(e) => {
             let _ = app.emit(
                 "dictation-status",
-                format!("Polish failed; using transcript: {}", e),
+                format!("Polish failed; using light cleanup: {}", e),
             );
-            postprocess::light_polish(&result.text)
+            postprocess::light_polish(&raw_result.text)
         }
     };
+    let postprocess_ms = postprocess_started.elapsed().as_millis() as u64;
 
-    let text = result.text.clone();
-    let _ = app.clipboard().write_text(text.clone());
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let paste_target = *state.paste_target_hwnd.lock().await;
-
+    let paste_started = Instant::now();
     let paste_result = (|| -> Result<(), String> {
-        restore_paste_target(paste_target);
-        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
-
-        #[cfg(target_os = "macos")]
-        {
-            enigo.key(enigo::Key::Meta, enigo::Direction::Press).map_err(|e| e.to_string())?;
-            enigo.key(enigo::Key::Unicode('v'), enigo::Direction::Click).map_err(|e| e.to_string())?;
-            enigo.key(enigo::Key::Meta, enigo::Direction::Release).map_err(|e| e.to_string())?;
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            enigo.key(enigo::Key::Control, enigo::Direction::Press).map_err(|e| e.to_string())?;
-            enigo.key(enigo::Key::Unicode('v'), enigo::Direction::Click).map_err(|e| e.to_string())?;
-            enigo.key(enigo::Key::Control, enigo::Direction::Release).map_err(|e| e.to_string())?;
-        }
-
-        Ok(())
+        app.clipboard()
+            .write_text(final_transcript.clone())
+            .map_err(|e| format!("Unable to write transcript to clipboard: {}", e))?;
+        paste_from_clipboard(session.paste_target_hwnd)
     })();
+    let paste_ms = paste_started.elapsed().as_millis() as u64;
 
-    clear_recording(&state).await;
-    let _ = app.emit("dictation-finished", &result);
-    if let Err(e) = paste_result {
-        let _ = app.emit(
-            "dictation-status",
-            format!("Transcript ready and copied. Auto-paste failed: {}", e),
-        );
+    let diagnostics = DictationDiagnostics {
+        duration_ms: summary.duration_ms,
+        chunk_count,
+        sarvam_request_ms,
+        postprocess_ms,
+        paste_ms,
+        total_after_recording_ms: after_recording_started.elapsed().as_millis() as u64,
+        selected_language_code: config.language.clone().unwrap_or_else(|| "unknown".into()),
+        codemix: config.codemix.unwrap_or(true),
+        returned_language_code: raw_result.language.clone(),
+        model: config.model.clone().unwrap_or_else(|| "unknown".into()),
+        sample_rate: summary.sample_rate,
+        channel_count: summary.channels,
+        peak_level_percent: summary.peak_level * 100.0,
+        insertion_succeeded: paste_result.is_ok(),
+    };
+    let result = DictationResult {
+        raw_transcript: raw_result.text,
+        final_transcript,
+        diagnostics,
+    };
+
+    let _ = app.emit("dictation-result", &result);
+    paste_result
+        .map(|_| result)
+        .map_err(|e| format!("Insertion failed: {}", e))
+}
+
+async fn run_dictation(
+    state: AppState,
+    app: tauri::AppHandle,
+    recording_ready: Option<mpsc::Sender<()>>,
+) -> Result<DictationResult, String> {
+    startup_log("normal hotkey action entered");
+    let config = state.config.lock().await.clone();
+    if config.provider_name.as_deref() != Some("local") && config.api_key().is_none() {
+        let message = "Add your Sarvam API key in Voca before dictating";
+        startup_log("normal hotkey action rejected: API key unavailable");
+        let _ = app.emit("dictation-error", message);
+        return Err(message.into());
     }
 
+    let session = match begin_recording(&state, false).await {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = app.emit("dictation-error", &error);
+            return Err(error);
+        }
+    };
+    if let Some(sender) = recording_ready {
+        let _ = sender.send(());
+    }
+
+    let _ = app.emit("dictation-started", ());
+    let _ = app.emit("dictation-status", "Recording audio...");
+    let outcome = run_dictation_session(&state, &app, &config, &session).await;
+    finish_recording(&state, session.id).await;
+
+    match outcome {
+        Ok(result) => {
+            let _ = app.emit("dictation-finished", ());
+            Ok(result)
+        }
+        Err(error) => {
+            let _ = app.emit("dictation-error", &error);
+            Err(error)
+        }
+    }
+}
+
+async fn run_evaluation_session(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    config: &Config,
+    session: &RecordingSession,
+) -> Result<EvaluationRun, String> {
+    let temp_dir = create_recording_temp_dir()?;
+    let audio_path = temp_dir.path().join("evaluation.wav");
+    let recorder = AudioRecorder::new();
+    let summary = recorder
+        .record_until_silence_or_stop(&audio_path, session.stop_signal.clone())
+        .map_err(|error| format!("Recording failed: {}", error))?;
+
+    startup_log(format!(
+        "evaluation recording finished: duration_ms={} speech_detected={}",
+        summary.duration_ms, summary.speech_detected
+    ));
+
+    if !summary.speech_detected {
+        return Err("No speech detected; nothing was sent to Sarvam".into());
+    }
+
+    let (run_number, expected_text) = {
+        let evaluation = state.evaluation.lock().await;
+        (
+            evaluation.next_run_number(),
+            evaluation.expected_text.clone(),
+        )
+    };
+    let mode = if config.codemix.unwrap_or(true) {
+        "codemix"
+    } else {
+        "transcribe"
+    };
+    let metadata = EvaluationMetadata {
+        run_number,
+        expected_text,
+        selected_language_code: config.language.clone().unwrap_or_else(|| "unknown".into()),
+        mode: mode.into(),
+        audio_duration_ms: summary.duration_ms,
+        sample_rate: summary.sample_rate,
+        channels: summary.channels,
+    };
+
+    let _ = app.emit(
+        "dictation-status",
+        format!("Running V3/V4 evaluation {}...", run_number),
+    );
+    let provider = state.provider.lock().await;
+    let result = evaluate_models(provider.as_ref(), &audio_path, metadata).await;
+    drop(provider);
+
+    startup_log(format!(
+        "evaluation models finished: run={} v3_success={} v4_success={}",
+        result.run_number, result.v3.success, result.v4.success
+    ));
+
+    state.evaluation.lock().await.runs.push(result.clone());
+    if let Err(error) = app.emit("evaluation-result", &result) {
+        startup_log(format!("evaluation-result emit failed: {}", error));
+    }
     Ok(result)
 }
 
+async fn run_evaluation(
+    state: AppState,
+    app: tauri::AppHandle,
+    recording_ready: Option<mpsc::Sender<()>>,
+) -> Result<EvaluationRun, String> {
+    startup_log("evaluation hotkey action entered");
+    let config = state.config.lock().await.clone();
+    if config.provider_name.as_deref() != Some("local") && config.api_key().is_none() {
+        let message = "Add your Sarvam API key in Voca before evaluating";
+        startup_log("evaluation hotkey action rejected: API key unavailable");
+        let _ = app.emit("dictation-error", message);
+        return Err(message.into());
+    }
+
+    let session = match begin_recording(&state, false).await {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = app.emit("dictation-error", &error);
+            return Err(error);
+        }
+    };
+    if let Some(sender) = recording_ready {
+        let _ = sender.send(());
+    }
+
+    let _ = app.emit("dictation-started", ());
+    let _ = app.emit("dictation-status", "Recording one evaluation utterance...");
+    let outcome = run_evaluation_session(&state, &app, &config, &session).await;
+    finish_recording(&state, session.id).await;
+
+    match outcome {
+        Ok(result) => {
+            startup_log(format!("evaluation run {} completed", result.run_number));
+            let _ = app.emit("dictation-finished", ());
+            Ok(result)
+        }
+        Err(error) => {
+            startup_log(format!("evaluation run failed: {}", error));
+            let _ = app.emit("dictation-error", &error);
+            Err(error)
+        }
+    }
+}
+
 #[tauri::command]
-async fn test_microphone(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
-    begin_recording(state.inner(), &app).await?;
+async fn test_microphone(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let session = begin_recording(state.inner(), false).await?;
 
     let _ = app.emit("mic-test-started", ());
 
     let recorder = AudioRecorder::new();
     let result = recorder.probe_microphone();
 
-    clear_recording(state.inner()).await;
+    finish_recording(state.inner(), session.id).await;
 
     match result {
         Ok(message) => {
@@ -494,28 +692,117 @@ async fn get_provider_name(state: State<'_, AppState>) -> Result<String, String>
 }
 
 #[tauri::command]
-async fn toggle_dictation(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<SttResult, String> {
-    run_dictation(state.inner().clone(), app).await
+async fn set_evaluation_settings(
+    state: State<'_, AppState>,
+    enabled: bool,
+    expected_text: Option<String>,
+) -> Result<EvaluationSession, String> {
+    let mut evaluation = state.evaluation.lock().await;
+    evaluation.set_settings(enabled, expected_text);
+    Ok(evaluation.clone())
+}
+
+#[tauri::command]
+async fn get_evaluation_session(state: State<'_, AppState>) -> Result<EvaluationSession, String> {
+    Ok(state.evaluation.lock().await.clone())
+}
+
+#[tauri::command]
+async fn clear_evaluation_session(state: State<'_, AppState>) -> Result<EvaluationSession, String> {
+    let mut evaluation = state.evaluation.lock().await;
+    evaluation.clear();
+    Ok(evaluation.clone())
+}
+
+#[tauri::command]
+async fn export_evaluation_results(state: State<'_, AppState>) -> Result<String, String> {
+    let session = state.evaluation.lock().await.clone();
+    if session.runs.is_empty() {
+        return Err("There are no evaluation runs to export".into());
+    }
+
+    let json = serde_json::to_string_pretty(&session)
+        .map_err(|error| format!("Unable to serialize evaluation JSON: {}", error))?;
+    let csv = session_to_csv(&session);
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(mut json_path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("voca-evaluation-session.json")
+            .save_file()
+        else {
+            return Ok("Export cancelled".to_string());
+        };
+        if json_path.extension().is_none() {
+            json_path.set_extension("json");
+        }
+        let mut csv_path = json_path.clone();
+        csv_path.set_extension("csv");
+
+        std::fs::write(&json_path, json)
+            .map_err(|error| format!("Unable to write JSON export: {}", error))?;
+        std::fs::write(&csv_path, csv)
+            .map_err(|error| format!("Unable to write CSV export: {}", error))?;
+        Ok(format!(
+            "Exported {} and {}",
+            json_path.display(),
+            csv_path.display()
+        ))
+    })
+    .await
+    .map_err(|error| format!("Export task failed: {}", error))?
+}
+
+#[tauri::command]
+async fn toggle_dictation(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let action = {
+        let evaluation = state.evaluation.lock().await;
+        hotkey_action(&evaluation)
+    };
+
+    match action {
+        HotkeyAction::NormalDictation => {
+            run_dictation(state.inner().clone(), app, None).await?;
+        }
+        HotkeyAction::Evaluation => {
+            run_evaluation(state.inner().clone(), app, None).await?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
 async fn is_recording(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(*state.recording.lock().await)
+    Ok(state.recording.lock().await.is_active())
 }
 
 #[tauri::command]
-async fn reset_recording(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
-    request_stop_recording(state.inner()).await;
-    clear_recording(state.inner()).await;
-    let _ = app.emit("dictation-status", "Recording state reset.");
-    Ok("recording-reset".into())
+async fn reset_recording(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    if request_stop_recording(state.inner()).await {
+        let _ = app.emit(
+            "dictation-status",
+            "Stop requested. Waiting for the active recording to shut down...",
+        );
+        Ok("recording-stop-requested".into())
+    } else {
+        Ok("no-active-recording".into())
+    }
 }
 
 #[tauri::command]
-async fn stop_recording(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<String, String> {
-    request_stop_recording(state.inner()).await;
-    let _ = app.emit("dictation-status", "Stopping recording...");
-    Ok("recording-stop-requested".into())
+async fn stop_recording(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    if request_stop_recording(state.inner()).await {
+        let _ = app.emit("dictation-status", "Stopping recording...");
+        Ok("recording-stop-requested".into())
+    } else {
+        Ok("no-active-recording".into())
+    }
 }
 
 #[tauri::command]
@@ -526,18 +813,20 @@ async fn reveal_window(app: tauri::AppHandle) -> Result<String, String> {
 
 pub fn run() {
     let config = Config::load("voca");
-    let hotkey_str = config.hotkey.clone().unwrap_or_else(|| "CmdOrCtrl+Shift+S".into());
+    let hotkey_str = config
+        .hotkey
+        .clone()
+        .unwrap_or_else(|| "CmdOrCtrl+Shift+S".into());
 
     let state = AppState {
         provider: Arc::new(Mutex::new(
             build_provider(&config).expect("shipped provider configuration must be valid"),
         )),
         config: Arc::new(Mutex::new(config)),
-        recording: Arc::new(Mutex::new(false)),
-        recording_started_at: Arc::new(Mutex::new(None)),
-        stop_signal: Arc::new(AtomicBool::new(false)),
-        paste_target_hwnd: Arc::new(Mutex::new(None)),
+        recording: Arc::new(Mutex::new(RecordingLifecycle::default())),
+        next_recording_id: Arc::new(AtomicU64::new(1)),
         hotkey_status: Arc::new(Mutex::new("Hotkey registration pending...".into())),
+        evaluation: Arc::new(Mutex::new(EvaluationSession::default())),
     };
 
     tauri::Builder::default()
@@ -553,6 +842,10 @@ pub fn run() {
             clear_api_key,
             get_hotkey_status,
             get_provider_name,
+            set_evaluation_settings,
+            get_evaluation_session,
+            clear_evaluation_session,
+            export_evaluation_results,
             test_microphone,
             toggle_dictation,
             is_recording,
@@ -598,14 +891,43 @@ pub fn run() {
                     let state = hook_state.clone();
                     match event {
                         keyboard_hook::HookEvent::Pressed => {
+                            startup_log("hook receiver: Pressed");
+                            let (recording_ready_tx, recording_ready_rx) = mpsc::channel();
                             tauri::async_runtime::spawn(async move {
-                                let _ = run_dictation(state, app_clone).await;
+                                let action = {
+                                    let evaluation = state.evaluation.lock().await;
+                                    hotkey_action(&evaluation)
+                                };
+                                match action {
+                                    HotkeyAction::Evaluation => {
+                                        let _ = run_evaluation(
+                                            state,
+                                            app_clone,
+                                            Some(recording_ready_tx),
+                                        )
+                                        .await;
+                                    }
+                                    HotkeyAction::NormalDictation => {
+                                        let _ = run_dictation(
+                                            state,
+                                            app_clone,
+                                            Some(recording_ready_tx),
+                                        )
+                                        .await;
+                                    }
+                                }
                             });
+                            // Do not consume the corresponding release until the recording
+                            // lifecycle owns this accepted hotkey press (or startup fails).
+                            let _ = recording_ready_rx.recv();
                         }
                         keyboard_hook::HookEvent::Released => {
+                            startup_log("hook receiver: Released");
                             tauri::async_runtime::spawn(async move {
-                                request_stop_recording(&state).await;
-                                let _ = app_clone.emit("dictation-status", "Stopping recording...");
+                                if request_stop_recording(&state).await {
+                                    let _ =
+                                        app_clone.emit("dictation-status", "Stopping recording...");
+                                }
                             });
                         }
                     }
@@ -627,8 +949,80 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_config_update;
+    use super::{
+        append_sarvam_chunk, create_recording_temp_dir, hotkey_action, merge_config_update,
+        HotkeyAction, RecordingLifecycle, RecordingPhase,
+    };
     use crate::config::Config;
+    use crate::evaluation::EvaluationSession;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn recording_lifecycle_keeps_stop_signal_set_until_owner_finishes() {
+        let stop_signal = Arc::new(AtomicBool::new(false));
+        let mut lifecycle = RecordingLifecycle::default();
+        let session = lifecycle.begin(1, stop_signal.clone(), Some(123)).unwrap();
+
+        assert!(lifecycle.request_stop());
+        assert!(stop_signal.load(Ordering::Acquire));
+        assert_eq!(
+            lifecycle.active.as_ref().map(|active| active.phase),
+            Some(RecordingPhase::Stopping)
+        );
+        assert!(lifecycle
+            .begin(2, Arc::new(AtomicBool::new(false)), Some(456))
+            .is_err());
+        assert!(!lifecycle.finish(2));
+        assert!(lifecycle.is_active());
+        assert!(stop_signal.load(Ordering::Acquire));
+
+        assert!(lifecycle.finish(session.id));
+        assert!(!lifecycle.is_active());
+        assert!(lifecycle
+            .begin(2, Arc::new(AtomicBool::new(false)), Some(456))
+            .is_ok());
+    }
+
+    #[test]
+    fn evaluation_off_routes_hotkey_to_normal_dictation() {
+        assert_eq!(
+            hotkey_action(&EvaluationSession::default()),
+            HotkeyAction::NormalDictation
+        );
+        assert_eq!(
+            hotkey_action(&EvaluationSession {
+                enabled: true,
+                ..Default::default()
+            }),
+            HotkeyAction::Evaluation
+        );
+    }
+
+    #[test]
+    fn sarvam_chunk_join_preserves_each_response_and_only_adds_needed_separator() {
+        let mut assembled = String::new();
+        append_sarvam_chunk(&mut assembled, " first ");
+        append_sarvam_chunk(&mut assembled, "second");
+        append_sarvam_chunk(&mut assembled, "third");
+
+        assert_eq!(assembled, " first second third");
+    }
+
+    #[test]
+    fn recording_temp_directories_are_unique_and_removed_on_drop() {
+        let first = create_recording_temp_dir().unwrap();
+        let second = create_recording_temp_dir().unwrap();
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+        assert_ne!(first_path, second_path);
+
+        std::fs::write(first_path.join("recording.wav"), b"temporary audio").unwrap();
+        drop(first);
+
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+    }
 
     #[test]
     fn save_config_update_preserves_hidden_provider_fields() {

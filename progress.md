@@ -4,9 +4,9 @@ rank: 3
 score: 0.81
 sprint: 1
 substrate_anchor: Saaras
-status: ready-to-launch
+status: testing
 v01_acceptance_pct: 95
-last_update: 2026-07-16
+last_update: 2026-08-16
 stars: 0
 dependents: 0
 ---
@@ -78,6 +78,9 @@ Update it as the build progresses.
 - 2026-06-25 - smoke tests added - ignored tests verify one-second microphone WAV capture and the real Sarvam Rust client against a generated silent WAV
 - 2026-06-25 - config merge regression fixed - settings saves now preserve the hidden Sarvam endpoint/model/hotkey fields so longer dictations cannot wipe the request URL
 - 2026-06-25 - dictation window extended - manual and hotkey dictation now capture 30 seconds of audio before sending to Sarvam
+- 2026-08-16 - evaluation feedback and manual routing hardened - Dictate now respects evaluation mode, the evaluation card shows recording/processing/errors, and completed runs are recovered from in-memory history if a frontend event is missed
+- 2026-08-16 - packaged evaluation UI cache invalidated - the embedded WebView script URL is versioned so rebuilt evaluation listeners and rendering logic cannot be replaced by a stale cached main.js
+- 2026-08-16 - evaluation results made event-independent - the frontend now polls the in-memory evaluation session while evaluation mode is enabled and exposes a manual refresh control plus visible frontend build marker
 - 2026-06-25 - dictation recovery hardened - recording state now clears after paste failures, duplicate starts are guarded, and transcripts get local punctuation/spacing cleanup
 - 2026-06-25 - Wispr-style polish layer added - transcripts now pass through local voice-command punctuation/paragraph cleanup, with optional configurable full grammar polish
 - 2026-06-25 - disfluency cleanup added - light polish now removes common spoken fillers and repeated vague words across English/Hinglish/Kannada-style dictation
@@ -90,6 +93,11 @@ Update it as the build progresses.
 - 2026-07-16 - BYO-key installer verified - Rust tests pass and an NSIS `v0.2.0` installer builds locally; local-only provider moved to v0.5 so v0.2 can ship as a BYO-key beta
 - 2026-07-16 - provider defaults externalized - Sarvam endpoint and model moved to shipped configuration, and the unimplemented local placeholder now fails explicitly instead of returning fake transcript text
 - 2026-07-16 - BYO-key beta scope approved - v0.2 ships as a Windows prerelease installer where each user supplies their own Sarvam key; local-only support remains scheduled for v0.5
+- 2026-08-16 - Saaras evaluation reliability pass - recording lifecycle ownership, unique temporary audio cleanup, Right Alt push-to-talk, raw/final transcript separation, insertion errors, and in-memory latency diagnostics implemented; awaiting real microphone/API verification
+- 2026-08-16 - Right Alt hook matching fixed - Windows now distinguishes physical Right Alt with the Alt scan code and extended-key flag; Left Alt no longer changes dictation state
+- 2026-08-16 - hotkey tap lifecycle race fixed - accepted presses now own release state explicitly, and recording startup is reserved before a corresponding release can stop it
+- 2026-08-16 - silent hotkey taps suppressed - captures without sustained voice activity now stop before the Sarvam request, preventing tiny hallucinated transcripts from being pasted
+- 2026-08-16 - V3/V4 evaluation mode added - one WAV now supports isolated sequential Saaras comparisons, raw side-by-side results, in-memory history, and explicit JSON/CSV export without changing normal paste behavior
 
 ## Tombstone watch
 

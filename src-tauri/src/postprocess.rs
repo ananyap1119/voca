@@ -34,7 +34,7 @@ struct ChatResponseMessage {
 
 pub async fn polish_transcript(input: &str, config: &Config) -> Result<String, String> {
     let local = light_polish(input);
-    match config.polish_mode.as_deref().unwrap_or("light") {
+    match config.polish_mode.as_deref().unwrap_or("off") {
         "off" => Ok(input.trim().to_string()),
         "full" => full_polish(&local, config).await,
         _ => Ok(local),
@@ -120,7 +120,9 @@ fn apply_voice_commands(input: &str) -> String {
 
     while index < words.len() {
         let current = normalize_command_word(words[index]);
-        let next = words.get(index + 1).map(|word| normalize_command_word(word));
+        let next = words
+            .get(index + 1)
+            .map(|word| normalize_command_word(word));
 
         match (current.as_str(), next.as_deref()) {
             ("new", Some("paragraph")) => {
@@ -217,9 +219,10 @@ fn matches_filler_phrase(words: &[&str], index: usize, phrase: &[&str]) -> bool 
         return false;
     }
 
-    phrase.iter().enumerate().all(|(offset, expected)| {
-        normalize_disfluency_word(words[index + offset]) == *expected
-    })
+    phrase
+        .iter()
+        .enumerate()
+        .all(|(offset, expected)| normalize_disfluency_word(words[index + offset]) == *expected)
 }
 
 fn normalize_disfluency_word(input: &str) -> String {
@@ -236,8 +239,7 @@ fn normalize_disfluency_word(input: &str) -> String {
 fn is_filler_word(word: &str) -> bool {
     matches!(
         word,
-        "uh"
-            | "um"
+        "uh" | "um"
             | "umm"
             | "uhh"
             | "hmm"

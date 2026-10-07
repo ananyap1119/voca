@@ -4,7 +4,7 @@ use hound::{SampleFormat as WavSampleFormat, WavReader, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,6 +12,11 @@ const MIN_RECORDING_SECONDS: u64 = 1;
 const MAX_RECORDING_SECONDS: u64 = 300;
 const STOP_AFTER_SILENCE_MS: u64 = 1600;
 const VOICE_RMS_THRESHOLD: f32 = 0.018;
+const MIN_VOICED_CALLBACKS: u32 = 5;
+
+fn has_sustained_voice(voiced_callbacks: u32) -> bool {
+    voiced_callbacks >= MIN_VOICED_CALLBACKS
+}
 
 pub struct AudioRecorder {}
 
@@ -19,6 +24,7 @@ pub struct AudioRecorder {}
 pub struct RecordingSummary {
     pub duration_ms: u64,
     pub peak_level: f32,
+    pub speech_detected: bool,
     pub sample_rate: u32,
     pub channels: u16,
 }
@@ -28,15 +34,15 @@ pub fn split_wav_for_api(path: &Path, max_seconds: u32) -> Result<Vec<std::path:
         return Err("Audio chunk duration must be greater than zero".into());
     }
 
-    let mut reader = WavReader::open(path).map_err(|e| format!("Failed to open recording: {}", e))?;
+    let mut reader =
+        WavReader::open(path).map_err(|e| format!("Failed to open recording: {}", e))?;
     let spec = reader.spec();
     if spec.bits_per_sample != 16 || spec.sample_format != WavSampleFormat::Int {
         return Err("Recorded WAV must use 16-bit PCM audio".into());
     }
 
-    let samples_per_chunk = spec.sample_rate as usize
-        * spec.channels as usize
-        * max_seconds as usize;
+    let samples_per_chunk =
+        spec.sample_rate as usize * spec.channels as usize * max_seconds as usize;
     let samples = reader
         .samples::<i16>()
         .collect::<Result<Vec<_>, _>>()
@@ -47,7 +53,10 @@ pub fn split_wav_for_api(path: &Path, max_seconds: u32) -> Result<Vec<std::path:
     }
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("voca-recording");
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("voca-recording");
     let mut paths = Vec::new();
 
     for (index, chunk) in samples.chunks(samples_per_chunk).enumerate() {
@@ -134,6 +143,7 @@ impl AudioRecorder {
         )));
         let last_voice_at = Arc::new(Mutex::new(Instant::now()));
         let peak_level = Arc::new(Mutex::new(0.0_f32));
+        let voiced_callbacks = Arc::new(AtomicU32::new(0));
 
         let err_fn = |err| eprintln!("audio error: {}", err);
         let stream_config = config.config();
@@ -142,12 +152,18 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let last_voice_at = last_voice_at.clone();
                 let peak_level = peak_level.clone();
+                let voiced_callbacks = voiced_callbacks.clone();
                 device
                     .build_input_stream(
                         &stream_config,
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             let level = write_f32_samples(&writer_clone, data);
-                            update_voice_activity(level, &last_voice_at, &peak_level);
+                            update_voice_activity(
+                                level,
+                                &last_voice_at,
+                                &peak_level,
+                                &voiced_callbacks,
+                            );
                         },
                         err_fn,
                         None,
@@ -158,12 +174,18 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let last_voice_at = last_voice_at.clone();
                 let peak_level = peak_level.clone();
+                let voiced_callbacks = voiced_callbacks.clone();
                 device
                     .build_input_stream(
                         &stream_config,
                         move |data: &[i16], _: &cpal::InputCallbackInfo| {
                             let level = write_i16_samples(&writer_clone, data);
-                            update_voice_activity(level, &last_voice_at, &peak_level);
+                            update_voice_activity(
+                                level,
+                                &last_voice_at,
+                                &peak_level,
+                                &voiced_callbacks,
+                            );
                         },
                         err_fn,
                         None,
@@ -174,12 +196,18 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let last_voice_at = last_voice_at.clone();
                 let peak_level = peak_level.clone();
+                let voiced_callbacks = voiced_callbacks.clone();
                 device
                     .build_input_stream(
                         &stream_config,
                         move |data: &[u16], _: &cpal::InputCallbackInfo| {
                             let level = write_u16_samples(&writer_clone, data);
-                            update_voice_activity(level, &last_voice_at, &peak_level);
+                            update_voice_activity(
+                                level,
+                                &last_voice_at,
+                                &peak_level,
+                                &voiced_callbacks,
+                            );
                         },
                         err_fn,
                         None,
@@ -194,7 +222,7 @@ impl AudioRecorder {
         loop {
             std::thread::sleep(Duration::from_millis(100));
             let elapsed = started_at.elapsed();
-            if elapsed >= min_duration && stop_signal.load(Ordering::Relaxed) {
+            if elapsed >= min_duration && stop_signal.load(Ordering::Acquire) {
                 break;
             }
             if elapsed >= max_duration {
@@ -220,6 +248,7 @@ impl AudioRecorder {
         Ok(RecordingSummary {
             duration_ms: started_at.elapsed().as_millis() as u64,
             peak_level: peak_level.lock().map(|level| *level).unwrap_or_default(),
+            speech_detected: has_sustained_voice(voiced_callbacks.load(Ordering::Acquire)),
             sample_rate: spec.sample_rate,
             channels: spec.channels,
         })
@@ -247,11 +276,13 @@ fn update_voice_activity(
     level: f32,
     last_voice_at: &Arc<Mutex<Instant>>,
     peak_level: &Arc<Mutex<f32>>,
+    voiced_callbacks: &AtomicU32,
 ) {
     if let Ok(mut peak) = peak_level.lock() {
         *peak = peak.max(level);
     }
     if level >= VOICE_RMS_THRESHOLD {
+        voiced_callbacks.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut last) = last_voice_at.lock() {
             *last = Instant::now();
         }
@@ -340,6 +371,13 @@ mod tests {
     fn rms_detects_signal_level() {
         assert!(super::rms(4.0, 4) > 0.9);
         assert_eq!(super::rms(0.0, 0), 0.0);
+    }
+
+    #[test]
+    fn speech_requires_sustained_voice_activity() {
+        assert!(!super::has_sustained_voice(0));
+        assert!(!super::has_sustained_voice(4));
+        assert!(super::has_sustained_voice(5));
     }
 
     #[test]

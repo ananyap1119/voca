@@ -23,18 +23,37 @@ const stopRecordingButton = document.getElementById('stop-recording');
 const resetRecordingButton = document.getElementById('reset-recording');
 const copyTranscriptButton = document.getElementById('copy-transcript');
 const micStatus = document.getElementById('mic-status');
-const micLevel = document.getElementById('mic-level');
-const transcriptBox = document.getElementById('transcript');
+const recordingIndicator = document.getElementById('recording-indicator');
+const rawTranscriptBox = document.getElementById('raw-transcript');
+const finalTranscriptBox = document.getElementById('final-transcript');
+const diagnosticsBox = document.getElementById('diagnostics');
+const normalResults = document.getElementById('normal-results');
+const evaluationModeCheck = document.getElementById('evaluation-mode');
+const expectedTextRow = document.getElementById('expected-text-row');
+const expectedTextInput = document.getElementById('expected-text');
+const evaluationResults = document.getElementById('evaluation-results');
+const evaluationV3Transcript = document.getElementById('evaluation-v3-transcript');
+const evaluationV4Transcript = document.getElementById('evaluation-v4-transcript');
+const evaluationV3Meta = document.getElementById('evaluation-v3-meta');
+const evaluationV4Meta = document.getElementById('evaluation-v4-meta');
+const evaluationComparison = document.getElementById('evaluation-comparison');
+const evaluationHistory = document.getElementById('evaluation-history');
+const evaluationStatus = document.getElementById('evaluation-status');
+const refreshEvaluationButton = document.getElementById('refresh-evaluation');
+const exportEvaluationButton = document.getElementById('export-evaluation');
+const clearEvaluationButton = document.getElementById('clear-evaluation');
 
 let saveTimer = null;
-let dictationTimer = null;
-let dictationStartedAt = null;
+let evaluationSaveTimer = null;
 let isDictating = false;
+let evaluationRunReceived = false;
+let latestEvaluationRunNumber = 0;
 
 function displayHotkey(hotkey) {
   const isWindows = navigator.userAgent.toLowerCase().includes('windows');
   const isMac = navigator.platform.toLowerCase().includes('mac');
   if (!hotkey) return '';
+  if (hotkey.toLowerCase() === 'rightalt') return 'Right Alt';
   if (isWindows) return hotkey.replace('CmdOrCtrl+', 'Ctrl+').replaceAll('Cmd', 'Ctrl');
   if (isMac) return hotkey.replace('CmdOrCtrl+', 'Cmd+');
   return hotkey.replace('CmdOrCtrl+', 'Ctrl+');
@@ -85,33 +104,23 @@ function setControlsEnabled(enabled) {
 }
 
 function startDictationUi() {
-  clearInterval(dictationTimer);
   isDictating = true;
-  dictationStartedAt = Date.now();
+  evaluationRunReceived = false;
   setControlsEnabled(false);
   statusDot.className = 'status-dot recording';
   statusText.textContent = 'Recording... release hotkey or press Stop';
   showMicStatus('Recording dictation. Release the hotkey or press Stop when done.');
-  micLevel.style.width = '4%';
-
-  dictationTimer = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - dictationStartedAt) / 1000);
-    statusText.textContent = `Recording... ${elapsed}s`;
-    micLevel.style.width = `${Math.min(100, Math.max(4, (elapsed % 20) * 5))}%`;
-  }, 250);
+  recordingIndicator.textContent = 'Recording...';
 }
 
 function stopDictationUi() {
-  clearInterval(dictationTimer);
-  dictationTimer = null;
-  dictationStartedAt = null;
   isDictating = false;
   setControlsEnabled(true);
-  micLevel.style.width = '0%';
+  recordingIndicator.textContent = 'Not recording';
 }
 
 async function copyTranscript() {
-  const text = transcriptBox.value.trim();
+  const text = finalTranscriptBox.value;
   if (!text) {
     showMicStatus('No transcript yet');
     return;
@@ -124,6 +133,138 @@ async function copyTranscript() {
     console.error('Failed to copy transcript:', e);
     showMicStatus('Copy failed');
   }
+}
+
+function renderDictationResult(result) {
+  rawTranscriptBox.value = result.raw_transcript ?? '';
+  finalTranscriptBox.value = result.final_transcript ?? '';
+
+  const diagnostics = result.diagnostics;
+  if (!diagnostics) {
+    diagnosticsBox.innerHTML = '<span>Diagnostics unavailable</span>';
+    return;
+  }
+
+  const values = [
+    ['Audio', `${diagnostics.duration_ms} ms`],
+    ['Chunks', diagnostics.chunk_count],
+    ['Sarvam', `${diagnostics.sarvam_request_ms} ms`],
+    ['Postprocess', `${diagnostics.postprocess_ms} ms`],
+    ['Paste', `${diagnostics.paste_ms} ms`],
+    ['After recording', `${diagnostics.total_after_recording_ms} ms`],
+    ['Selected language', diagnostics.selected_language_code],
+    ['Returned language', diagnostics.returned_language_code || 'not returned'],
+    ['Codemix', diagnostics.codemix ? 'enabled' : 'disabled'],
+    ['Model', diagnostics.model],
+    ['Audio format', `${diagnostics.sample_rate} Hz / ${diagnostics.channel_count} ch`],
+    ['Peak level', `${diagnostics.peak_level_percent.toFixed(1)}%`],
+    ['Insertion', diagnostics.insertion_succeeded ? 'succeeded' : 'failed'],
+  ];
+  diagnosticsBox.replaceChildren(...values.map(([label, value]) => {
+    const item = document.createElement('span');
+    item.textContent = `${label}: ${value}`;
+    return item;
+  }));
+
+  const preview = result.final_transcript.substring(0, 40);
+  statusText.textContent = `Transcript ready: "${preview}${result.final_transcript.length > 40 ? '...' : ''}" - hold ${hotkeyDisplay.textContent} to dictate`;
+}
+
+function modelTranscript(modelResult) {
+  if (modelResult.success) return modelResult.raw_transcript ?? '';
+  return `ERROR: ${modelResult.error ?? 'Unknown error'}`;
+}
+
+function modelMeta(modelResult) {
+  const language = modelResult.returned_language_code || 'not returned';
+  const probability = modelResult.language_probability == null
+    ? 'not returned'
+    : modelResult.language_probability;
+  return `Language returned: ${language}\nLanguage probability: ${probability}\nRequest latency: ${modelResult.request_latency_ms} ms`;
+}
+
+function renderEvaluationRun(run) {
+  evaluationRunReceived = true;
+  latestEvaluationRunNumber = run.run_number;
+  evaluationResults.hidden = false;
+  evaluationV3Transcript.value = modelTranscript(run.v3);
+  evaluationV4Transcript.value = modelTranscript(run.v4);
+  evaluationV3Meta.textContent = modelMeta(run.v3);
+  evaluationV4Meta.textContent = modelMeta(run.v4);
+  const latencyDifference = run.v4.request_latency_ms - run.v3.request_latency_ms;
+  const values = [
+    ['V3 latency', `${run.v3.request_latency_ms} ms`],
+    ['V4 latency', `${run.v4.request_latency_ms} ms`],
+    ['Difference (V4 - V3)', `${latencyDifference} ms`],
+    ['Request order', run.request_order.join(' then ')],
+  ];
+  evaluationComparison.replaceChildren(...values.map(([label, value]) => {
+    const item = document.createElement('span');
+    item.textContent = `${label}: ${value}`;
+    return item;
+  }));
+  evaluationStatus.textContent = `Evaluation run ${run.run_number} complete. No transcript was pasted.`;
+}
+
+function renderEvaluationHistory(runs) {
+  evaluationHistory.replaceChildren(...runs.map((run) => {
+    const row = document.createElement('tr');
+    const values = [
+      run.run_number,
+      run.expected_text || '',
+      modelTranscript(run.v3),
+      modelTranscript(run.v4),
+      run.v3.request_latency_ms,
+      run.v4.request_latency_ms,
+    ];
+    row.replaceChildren(...values.map((value) => {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      return cell;
+    }));
+    return row;
+  }));
+}
+
+async function refreshEvaluationResults() {
+  if (!evaluationModeCheck.checked) return;
+
+  try {
+    const session = await invoke('get_evaluation_session');
+    const runs = session.runs || [];
+    const latestRun = runs.length > 0 ? runs[runs.length - 1] : null;
+    if (latestRun && latestRun.run_number !== latestEvaluationRunNumber) {
+      renderEvaluationRun(latestRun);
+    }
+    renderEvaluationHistory(runs);
+  } catch (e) {
+    evaluationStatus.textContent = `Could not refresh evaluation results: ${e}`;
+  }
+}
+
+function applyEvaluationMode(enabled) {
+  expectedTextRow.hidden = !enabled;
+  normalResults.hidden = enabled;
+  if (!enabled) evaluationResults.hidden = true;
+  evaluationStatus.textContent = enabled
+    ? 'Evaluation enabled. Hold Right Alt to record one V3-vs-V4 comparison.'
+    : 'Evaluation mode is off. No results are persisted automatically.';
+}
+
+async function saveEvaluationSettings() {
+  try {
+    await invoke('set_evaluation_settings', {
+      enabled: evaluationModeCheck.checked,
+      expectedText: expectedTextInput.value,
+    });
+  } catch (e) {
+    evaluationStatus.textContent = `Could not update evaluation mode: ${e}`;
+  }
+}
+
+function scheduleEvaluationSettingsSave() {
+  clearTimeout(evaluationSaveTimer);
+  evaluationSaveTimer = setTimeout(saveEvaluationSettings, 100);
 }
 
 async function loadConfig() {
@@ -139,13 +280,21 @@ async function loadConfig() {
     apiKeyStatus.textContent = keySaved
       ? 'API key saved securely on this computer'
       : 'Add your Sarvam API key before dictating';
-    polishModeSelect.value = cfg.polish_mode || 'light';
+    polishModeSelect.value = cfg.polish_mode || 'off';
     polishEndpointInput.value = cfg.polish_endpoint || '';
     polishModelInput.value = cfg.polish_model || '';
     polishApiKeyEnvInput.value = cfg.polish_api_key_env_var || '';
     if (cfg.hotkey) hotkeyDisplay.textContent = displayHotkey(cfg.hotkey);
     statusText.innerHTML = `Ready - hold <span class="hotkey">${hotkeyDisplay.textContent}</span> to dictate`;
     hotkeyStatus.textContent = hotkeyMessage;
+    const evaluationSession = await invoke('get_evaluation_session');
+    evaluationModeCheck.checked = evaluationSession.enabled;
+    expectedTextInput.value = evaluationSession.expected_text || '';
+    applyEvaluationMode(evaluationSession.enabled);
+    const runs = evaluationSession.runs || [];
+    const latestRun = runs.length > 0 ? runs[runs.length - 1] : null;
+    if (latestRun) renderEvaluationRun(latestRun);
+    renderEvaluationHistory(runs);
   } catch (e) {
     console.error('Failed to load config:', e);
     configPath.textContent = 'Failed to load';
@@ -195,23 +344,39 @@ removeApiKeyButton.addEventListener('click', async () => {
 
 void listen('dictation-started', async () => {
   startDictationUi();
+  if (evaluationModeCheck.checked) {
+    evaluationStatus.textContent = 'Recording one utterance for the V3/V4 comparison...';
+  }
 });
 
 void listen('dictation-status', async (event) => {
   showMicStatus(event.payload);
+  if (evaluationModeCheck.checked) {
+    evaluationStatus.textContent = event.payload;
+  }
 });
 
-void listen('dictation-finished', async (event) => {
+void listen('dictation-result', async (event) => {
+  renderDictationResult(event.payload);
+});
+
+void listen('dictation-finished', async () => {
   stopDictationUi();
   statusDot.className = 'status-dot ready';
-  const result = event.payload;
-  const hotkey = hotkeyDisplay.textContent;
-  const preview = result.text.substring(0, 40);
-  statusText.innerHTML = `Ready with text: "${preview}${result.text.length > 40 ? '...' : ''}" - hold <span class="hotkey">${hotkey}</span> to dictate`;
-  transcriptBox.value = result.text;
-  transcriptBox.focus();
-  transcriptBox.select();
-  showMicStatus('Dictation complete');
+  if (evaluationModeCheck.checked) {
+    if (!evaluationRunReceived) {
+      await refreshEvaluationResults();
+    }
+    showMicStatus('Evaluation complete; no transcript was pasted');
+  } else {
+    showMicStatus('Dictation complete and inserted into the target application');
+  }
+});
+
+void listen('evaluation-result', async (event) => {
+  renderEvaluationRun(event.payload);
+  const session = await invoke('get_evaluation_session');
+  renderEvaluationHistory(session.runs || []);
 });
 
 void listen('dictation-error', async (event) => {
@@ -219,6 +384,9 @@ void listen('dictation-error', async (event) => {
   statusDot.className = 'status-dot ready';
   statusText.textContent = `Error: ${event.payload}`;
   showMicStatus('Dictation failed');
+  if (evaluationModeCheck.checked) {
+    evaluationStatus.textContent = `Evaluation failed: ${event.payload}`;
+  }
 });
 
 void listen('hotkey-status', async (event) => {
@@ -230,7 +398,7 @@ testMicButton.addEventListener('click', async () => {
   statusDot.className = 'status-dot recording';
   statusText.textContent = 'Testing mic...';
   showMicStatus('Requesting microphone permission...');
-  micLevel.style.width = '0%';
+  recordingIndicator.textContent = 'Testing microphone...';
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const audioContext = new AudioContext();
@@ -251,7 +419,6 @@ testMicButton.addEventListener('click', async () => {
       }
       const rms = Math.sqrt(sum / data.length) / 128;
       const level = Math.max(4, Math.min(100, Math.round(rms * 140)));
-      micLevel.style.width = `${level}%`;
       showMicStatus(`Mic open: ${stream.getAudioTracks()[0]?.label || 'default input'} · level ${level}%`);
 
       if (Date.now() - startedAt < 5000) {
@@ -262,7 +429,7 @@ testMicButton.addEventListener('click', async () => {
         statusDot.className = 'status-dot ready';
         statusText.textContent = 'Mic test complete';
         showMicStatus('Mic stream closed');
-        micLevel.style.width = '0%';
+        recordingIndicator.textContent = 'Not recording';
       }
     };
 
@@ -271,6 +438,7 @@ testMicButton.addEventListener('click', async () => {
     statusDot.className = 'status-dot ready';
     statusText.textContent = `Error: ${e}`;
     showMicStatus('Mic test failed');
+    recordingIndicator.textContent = 'Not recording';
   }
 });
 
@@ -290,18 +458,12 @@ dictateNowButton.addEventListener('click', async () => {
   }
 
   startDictationUi();
-  transcriptBox.value = '';
+  rawTranscriptBox.value = '';
+  finalTranscriptBox.value = '';
+  diagnosticsBox.innerHTML = '<span>Waiting for transcription...</span>';
 
   try {
-    const result = await invoke('toggle_dictation');
-    statusDot.className = 'status-dot ready';
-    const hotkey = hotkeyDisplay.textContent;
-    const preview = result.text.substring(0, 40);
-    statusText.innerHTML = `Ready with text: "${preview}${result.text.length > 40 ? '...' : ''}" - hold <span class="hotkey">${hotkey}</span> to dictate`;
-    transcriptBox.value = result.text;
-    transcriptBox.focus();
-    transcriptBox.select();
-    showMicStatus('Dictation complete');
+    await invoke('toggle_dictation');
   } catch (e) {
     stopDictationUi();
     statusDot.className = 'status-dot ready';
@@ -322,11 +484,10 @@ stopRecordingButton.addEventListener('click', async () => {
 
 resetRecordingButton.addEventListener('click', async () => {
   try {
-    await invoke('reset_recording');
-    stopDictationUi();
-    statusDot.className = 'status-dot ready';
-    statusText.innerHTML = `Ready - hold <span class="hotkey">${hotkeyDisplay.textContent}</span> to dictate`;
-    showMicStatus('Recording state reset');
+    const result = await invoke('reset_recording');
+    showMicStatus(result === 'no-active-recording'
+      ? 'No active recording'
+      : 'Stop requested; waiting for recording shutdown');
   } catch (e) {
     statusDot.className = 'status-dot ready';
     statusText.textContent = `Error: ${e}`;
@@ -336,10 +497,39 @@ resetRecordingButton.addEventListener('click', async () => {
 
 copyTranscriptButton.addEventListener('click', copyTranscript);
 
+evaluationModeCheck.addEventListener('change', async () => {
+  applyEvaluationMode(evaluationModeCheck.checked);
+  await saveEvaluationSettings();
+});
+
+expectedTextInput.addEventListener('input', scheduleEvaluationSettingsSave);
+
+refreshEvaluationButton.addEventListener('click', refreshEvaluationResults);
+
+exportEvaluationButton.addEventListener('click', async () => {
+  try {
+    evaluationStatus.textContent = await invoke('export_evaluation_results');
+  } catch (e) {
+    evaluationStatus.textContent = `Export failed: ${e}`;
+  }
+});
+
+clearEvaluationButton.addEventListener('click', async () => {
+  try {
+    const session = await invoke('clear_evaluation_session');
+    expectedTextInput.value = '';
+    evaluationResults.hidden = true;
+    evaluationV3Transcript.value = '';
+    evaluationV4Transcript.value = '';
+    renderEvaluationHistory(session.runs || []);
+    evaluationStatus.textContent = 'Evaluation session cleared from memory.';
+  } catch (e) {
+    evaluationStatus.textContent = `Clear failed: ${e}`;
+  }
+});
+
 loadConfig();
 
-setTimeout(() => {
-  invoke('reveal_window').catch((e) => {
-    console.error('Failed to reveal window:', e);
-  });
-}, 8000);
+setInterval(() => {
+  void refreshEvaluationResults();
+}, 750);

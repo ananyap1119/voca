@@ -10,7 +10,7 @@ status: planned
 
 # PRD v1.0 — voca
 
-> **One-liner:** Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.
+> **One-liner:** Windows push-to-talk dictation prototype powered by Sarvam Saaras.
 >
 > **Substrate:** Indian professionals, students, content workers — anyone abandoned by Apple/Google's poor Indic dictation
 > **Launch channels:** Indian Twitter/X (with Hindi/Tamil/Telugu hashtags), r/India, r/IndiaTech, professional LinkedIn India
@@ -28,9 +28,12 @@ Demand has been screaming for a decade. Sovereign by construction. Ships in two 
 
 ---
 
-## v0.1 — what ships
+## Current implementation
 
-System tray app + global hotkey. Press hotkey, speak in any of 10 Indic languages or Hinglish, get text pasted into active app. Saaras v3 streaming via WebSocket. Codemix mode toggle. Works on macOS, Windows, Linux.
+Windows system-tray app with a Right Alt push-to-talk hook, native microphone
+capture, Saaras v3 batch REST transcription, a codemix mode toggle, raw/final
+transcript display, in-memory latency diagnostics, and clipboard/Ctrl+V insertion.
+Streaming, local STT, macOS, and Linux are not implemented.
 
 ### Acceptance criteria for v0.1
 
@@ -61,7 +64,9 @@ Meeting capture mode. Multi-speaker diarization. Voice command shortcuts.
 
 ### Stack
 
-Tauri (cross-platform tray + global hotkey support is decent in Rust). Bundled audio capture per OS. Saaras/Sarvam STT primary for v0.2 BYO-key beta; Whisper-Indic local fallback by v0.5.
+Tauri on Windows with a low-level Windows keyboard hook, CPAL audio capture, and
+Sarvam Saaras batch REST transcription. The current BYO-key beta has no local
+fallback.
 
 ### Provider abstraction
 
@@ -129,8 +134,8 @@ replacement.
 Post to: Indian Twitter/X (with Hindi/Tamil/Telugu hashtags), r/India, r/IndiaTech, professional LinkedIn India
 
 Subject template (adjust per channel):
-- Show HN: `Show HN: voca - Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.`
-- Reddit: `[OSS] Tray-app dictation for 22 Indian languages. Codemix Hinglish included. Apple/Google dictation, but actually good.` with full post explaining the gap and the build
+- Show HN: `Show HN: voca - Windows push-to-talk dictation powered by Sarvam Saaras`
+- Reddit: `[OSS] Windows push-to-talk dictation powered by Sarvam Saaras` with full post explaining the gap and the build
 - Twitter/X: thread leading with the demo gif
 
 ### Week-1 follow-up

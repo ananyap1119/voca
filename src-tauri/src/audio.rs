@@ -12,6 +12,9 @@ const MIN_RECORDING_SECONDS: u64 = 1;
 const MAX_RECORDING_SECONDS: u64 = 300;
 const STOP_AFTER_SILENCE_MS: u64 = 1600;
 const VOICE_RMS_THRESHOLD: f32 = 0.018;
+const LEVEL_REPORT_INTERVAL_MS: u64 = 33;
+
+pub type LevelCallback = Arc<dyn Fn(f32) + Send + Sync>;
 
 pub struct AudioRecorder {}
 
@@ -81,6 +84,7 @@ impl AudioRecorder {
             Duration::from_secs(duration_secs),
             Duration::from_secs(duration_secs),
             Arc::new(AtomicBool::new(false)),
+            None,
         )
         .map(|_| ())
     }
@@ -101,6 +105,23 @@ impl AudioRecorder {
             Duration::from_millis(STOP_AFTER_SILENCE_MS),
             Duration::from_secs(MAX_RECORDING_SECONDS),
             stop_signal,
+            None,
+        )
+    }
+
+    pub fn record_until_silence_or_stop_with_levels(
+        &self,
+        path: &Path,
+        stop_signal: Arc<AtomicBool>,
+        on_level: LevelCallback,
+    ) -> Result<RecordingSummary, String> {
+        self.record_with_stop_policy(
+            path,
+            Duration::from_secs(MIN_RECORDING_SECONDS),
+            Duration::from_millis(STOP_AFTER_SILENCE_MS),
+            Duration::from_secs(MAX_RECORDING_SECONDS),
+            stop_signal,
+            Some(on_level),
         )
     }
 
@@ -111,6 +132,7 @@ impl AudioRecorder {
         silence_duration: Duration,
         max_duration: Duration,
         stop_signal: Arc<AtomicBool>,
+        on_level: Option<LevelCallback>,
     ) -> Result<RecordingSummary, String> {
         let host = cpal::default_host();
         let device = host
@@ -134,6 +156,9 @@ impl AudioRecorder {
         )));
         let last_voice_at = Arc::new(Mutex::new(Instant::now()));
         let peak_level = Arc::new(Mutex::new(0.0_f32));
+        let last_level_report_at = Arc::new(Mutex::new(
+            Instant::now() - Duration::from_millis(LEVEL_REPORT_INTERVAL_MS),
+        ));
 
         let err_fn = |err| eprintln!("audio error: {}", err);
         let stream_config = config.config();
@@ -142,12 +167,15 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let last_voice_at = last_voice_at.clone();
                 let peak_level = peak_level.clone();
+                let on_level = on_level.clone();
+                let last_level_report_at = last_level_report_at.clone();
                 device
                     .build_input_stream(
                         &stream_config,
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             let level = write_f32_samples(&writer_clone, data);
                             update_voice_activity(level, &last_voice_at, &peak_level);
+                            report_level(level, &on_level, &last_level_report_at);
                         },
                         err_fn,
                         None,
@@ -158,12 +186,15 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let last_voice_at = last_voice_at.clone();
                 let peak_level = peak_level.clone();
+                let on_level = on_level.clone();
+                let last_level_report_at = last_level_report_at.clone();
                 device
                     .build_input_stream(
                         &stream_config,
                         move |data: &[i16], _: &cpal::InputCallbackInfo| {
                             let level = write_i16_samples(&writer_clone, data);
                             update_voice_activity(level, &last_voice_at, &peak_level);
+                            report_level(level, &on_level, &last_level_report_at);
                         },
                         err_fn,
                         None,
@@ -174,12 +205,15 @@ impl AudioRecorder {
                 let writer_clone = writer.clone();
                 let last_voice_at = last_voice_at.clone();
                 let peak_level = peak_level.clone();
+                let on_level = on_level.clone();
+                let last_level_report_at = last_level_report_at.clone();
                 device
                     .build_input_stream(
                         &stream_config,
                         move |data: &[u16], _: &cpal::InputCallbackInfo| {
                             let level = write_u16_samples(&writer_clone, data);
                             update_voice_activity(level, &last_voice_at, &peak_level);
+                            report_level(level, &on_level, &last_level_report_at);
                         },
                         err_fn,
                         None,
@@ -211,6 +245,10 @@ impl AudioRecorder {
         }
         drop(stream);
 
+        if let Some(callback) = &on_level {
+            callback(0.0);
+        }
+
         if let Ok(mut guard) = writer.lock() {
             if let Some(w) = guard.take() {
                 w.finalize().map_err(|e| e.to_string())?;
@@ -238,6 +276,23 @@ impl AudioRecorder {
             config.channels(),
             config.sample_rate().0
         ))
+    }
+}
+
+fn report_level(
+    level: f32,
+    callback: &Option<LevelCallback>,
+    last_report_at: &Arc<Mutex<Instant>>,
+) {
+    let Some(callback) = callback else {
+        return;
+    };
+
+    if let Ok(mut last) = last_report_at.lock() {
+        if last.elapsed() >= Duration::from_millis(LEVEL_REPORT_INTERVAL_MS) {
+            callback(level);
+            *last = Instant::now();
+        }
     }
 }
 
@@ -312,9 +367,12 @@ fn rms(sum: f32, len: usize) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{split_wav_for_api, AudioRecorder};
+    use super::{report_level, split_wav_for_api, AudioRecorder, LevelCallback, LEVEL_REPORT_INTERVAL_MS};
     use hound::{WavSpec, WavWriter};
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     #[test]
     #[ignore]
@@ -340,6 +398,23 @@ mod tests {
     fn rms_detects_signal_level() {
         assert!(super::rms(4.0, 4) > 0.9);
         assert_eq!(super::rms(0.0, 0), 0.0);
+    }
+
+    #[test]
+    fn level_callback_is_throttled() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        let callback: LevelCallback = Arc::new(move |_| {
+            callback_calls.fetch_add(1, Ordering::Relaxed);
+        });
+        let last_report_at = Arc::new(Mutex::new(
+            Instant::now() - Duration::from_millis(LEVEL_REPORT_INTERVAL_MS),
+        ));
+
+        report_level(0.2, &Some(callback.clone()), &last_report_at);
+        report_level(0.3, &Some(callback), &last_report_at);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

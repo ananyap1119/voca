@@ -92,12 +92,11 @@ function startDictationUi() {
   statusDot.className = 'status-dot recording';
   statusText.textContent = 'Recording... release hotkey or press Stop';
   showMicStatus('Recording dictation. Release the hotkey or press Stop when done.');
-  micLevel.style.width = '4%';
+  micLevel.style.width = '0%';
 
   dictationTimer = setInterval(() => {
     const elapsed = Math.floor((Date.now() - dictationStartedAt) / 1000);
     statusText.textContent = `Recording... ${elapsed}s`;
-    micLevel.style.width = `${Math.min(100, Math.max(4, (elapsed % 20) * 5))}%`;
   }, 250);
 }
 
@@ -199,6 +198,12 @@ void listen('dictation-started', async () => {
 
 void listen('dictation-status', async (event) => {
   showMicStatus(event.payload);
+});
+
+void listen('mic-level', async (event) => {
+  if (!isDictating) return;
+  const level = Math.min(100, Math.max(2, Number(event.payload) * 800));
+  micLevel.style.width = `${level}%`;
 });
 
 void listen('dictation-finished', async (event) => {

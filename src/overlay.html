@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voca recording</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: transparent;
+    }
+
+    .pill {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 18px;
+      border: 1px solid rgba(148, 163, 184, 0.32);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.96);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+    }
+
+    .indicator {
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: #fb7185;
+      box-shadow: 0 0 0 4px rgba(251, 113, 133, 0.14);
+    }
+
+    .waveform {
+      height: 34px;
+      display: flex;
+      flex: 1;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    .bar {
+      width: 4px;
+      height: 100%;
+      border-radius: 2px;
+      background: #38bdf8;
+      transform: scaleY(0.16);
+      transition: transform 55ms linear, background 160ms ease;
+      transform-origin: center;
+    }
+
+    .label {
+      width: 72px;
+      color: #e2e8f0;
+      font-size: 12px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .pill.processing .indicator {
+      background: #fbbf24;
+      box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.14);
+    }
+
+    .pill.processing .bar {
+      background: #fbbf24;
+      animation: processing 720ms ease-in-out infinite alternate;
+    }
+
+    .pill.processing .bar:nth-child(2n) { animation-delay: 120ms; }
+    .pill.processing .bar:nth-child(3n) { animation-delay: 240ms; }
+
+    .pill.done .indicator {
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
+    }
+
+    .pill.done .bar { background: #22c55e; }
+
+    .pill.error .indicator,
+    .pill.error .bar { background: #ef4444; }
+
+    @keyframes processing {
+      from { transform: scaleY(0.18); }
+      to { transform: scaleY(0.72); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .bar { transition: none; }
+      .pill.processing .bar { animation: none; transform: scaleY(0.4); }
+    }
+  </style>
+</head>
+<body>
+  <div class="pill" id="pill" role="status" aria-live="polite">
+    <div class="indicator"></div>
+    <div class="waveform" id="waveform" aria-hidden="true">
+      <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+      <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+      <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+    </div>
+    <span class="label" id="label">Listening</span>
+  </div>
+
+  <script>
+    const { listen } = window.__TAURI__.event;
+    const pill = document.getElementById('pill');
+    const label = document.getElementById('label');
+    const bars = Array.from(document.querySelectorAll('.bar'));
+    const shape = [0.42, 0.68, 0.88, 0.62, 1, 0.72, 0.9, 0.58, 0.38];
+    let smoothedLevel = 0;
+
+    function setState(state, text) {
+      pill.className = `pill ${state}`.trim();
+      label.textContent = text;
+    }
+
+    function renderLevel(rawLevel) {
+      const normalized = Math.min(1, Math.max(0, Number(rawLevel) * 8));
+      smoothedLevel = smoothedLevel * 0.62 + normalized * 0.38;
+      bars.forEach((bar, index) => {
+        const variation = 0.78 + Math.sin(Date.now() / 90 + index * 0.9) * 0.22;
+        const scale = Math.max(0.14, Math.min(1, smoothedLevel * shape[index] * variation + 0.12));
+        bar.style.transform = `scaleY(${scale})`;
+      });
+    }
+
+    void listen('dictation-started', () => {
+      smoothedLevel = 0;
+      setState('', 'Listening');
+      renderLevel(0);
+    });
+
+    void listen('mic-level', (event) => renderLevel(event.payload));
+    void listen('dictation-processing', () => setState('processing', 'Writing...'));
+    void listen('dictation-finished', () => setState('done', 'Pasted'));
+    void listen('dictation-error', () => setState('error', 'Try again'));
+  </script>
+</body>
+</html>

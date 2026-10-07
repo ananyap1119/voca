@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, State, WebviewUrl};
+use tauri::{Emitter, LogicalPosition, Manager, State, WebviewUrl};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::sync::Mutex;
 use windows::core::BOOL;
@@ -23,7 +23,7 @@ mod keyboard_hook;
 mod postprocess;
 mod stt;
 
-use audio::{split_wav_for_api, AudioRecorder};
+use audio::{split_wav_for_api, AudioRecorder, LevelCallback};
 use config::{delete_stored_api_key, store_api_key, Config};
 use postprocess::polish_transcript;
 use stt::{SaarasProvider, SharedProvider, SttResult};
@@ -183,6 +183,57 @@ fn build_main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, Str
         .map_err(|e| e.to_string())
 }
 
+fn build_recording_overlay(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        "recording-overlay",
+        WebviewUrl::App("overlay.html".into()),
+    )
+    .title("Voca recording")
+    .inner_size(264.0, 72.0)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    let _ = window.set_ignore_cursor_events(true);
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size().to_logical::<f64>(scale);
+        let origin = monitor.position().to_logical::<f64>(scale);
+        let x = origin.x + (size.width - 264.0) / 2.0;
+        let y = origin.y + size.height - 120.0;
+        let _ = window.set_position(LogicalPosition::new(x, y));
+    }
+
+    Ok(window)
+}
+
+fn show_recording_overlay(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("recording-overlay") {
+        let _ = window.show();
+    }
+}
+
+fn hide_recording_overlay(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("recording-overlay") {
+        let _ = window.hide();
+    }
+}
+
+fn hide_recording_overlay_after(app: &tauri::AppHandle, delay_ms: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        hide_recording_overlay(&app);
+    });
+}
+
 fn reveal_main_window(app: &tauri::AppHandle) {
     startup_log("reveal_main_window called");
     if let Some(window) = app.get_webview_window("main") {
@@ -260,6 +311,7 @@ async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResu
 
     begin_recording(&state, &app).await?;
 
+    show_recording_overlay(&app);
     let _ = app.emit("dictation-started", ());
     let _ = app.emit("dictation-status", "Recording audio...");
 
@@ -267,14 +319,25 @@ async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResu
     let audio_path = temp_dir.join("voca-recording.wav");
 
     let recorder = AudioRecorder::new();
-    let summary = match recorder.record_until_silence_or_stop(&audio_path, state.stop_signal.clone()) {
+    let level_app = app.clone();
+    let on_level: LevelCallback = Arc::new(move |level| {
+        let _ = level_app.emit("mic-level", level);
+    });
+    let summary = match recorder.record_until_silence_or_stop_with_levels(
+        &audio_path,
+        state.stop_signal.clone(),
+        on_level,
+    ) {
         Ok(summary) => summary,
         Err(e) => {
             clear_recording(&state).await;
             let _ = app.emit("dictation-error", format!("Recording failed: {}", e));
+            hide_recording_overlay_after(&app, 1_200);
             return Err(format!("Recording failed: {}", e));
         }
     };
+
+    let _ = app.emit("dictation-processing", ());
 
     let audio_size = std::fs::metadata(&audio_path)
         .map(|m| m.len())
@@ -297,6 +360,7 @@ async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResu
             let _ = std::fs::remove_file(&audio_path);
             clear_recording(&state).await;
             let _ = app.emit("dictation-error", format!("Audio preparation failed: {}", e));
+            hide_recording_overlay_after(&app, 1_200);
             return Err(format!("Audio preparation failed: {}", e));
         }
     };
@@ -329,6 +393,7 @@ async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResu
                 remove_recording_files(&audio_path, &audio_parts);
                 clear_recording(&state).await;
                 let _ = app.emit("dictation-error", format!("Transcription failed: {}", e));
+                hide_recording_overlay_after(&app, 1_200);
                 return Err(format!("Transcription failed: {}", e));
             }
         }
@@ -376,6 +441,7 @@ async fn run_dictation(state: AppState, app: tauri::AppHandle) -> Result<SttResu
 
     clear_recording(&state).await;
     let _ = app.emit("dictation-finished", &result);
+    hide_recording_overlay_after(&app, 700);
     if let Err(e) = paste_result {
         let _ = app.emit(
             "dictation-status",
@@ -564,6 +630,9 @@ pub fn run() {
             startup_log("setup started");
             let app_handle = app.handle().clone();
             reveal_main_window(&app_handle);
+            if let Err(error) = build_recording_overlay(&app_handle) {
+                startup_log(format!("recording overlay build failed: {}", error));
+            }
 
             // Tray icon
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

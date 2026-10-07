@@ -90,6 +90,7 @@ Update it as the build progresses.
 - 2026-07-16 - BYO-key installer verified - Rust tests pass and an NSIS `v0.2.0` installer builds locally; local-only provider moved to v0.5 so v0.2 can ship as a BYO-key beta
 - 2026-07-16 - provider defaults externalized - Sarvam endpoint and model moved to shipped configuration, and the unimplemented local placeholder now fails explicitly instead of returning fake transcript text
 - 2026-07-16 - BYO-key beta scope approved - v0.2 ships as a Windows prerelease installer where each user supplies their own Sarvam key; local-only support remains scheduled for v0.5
+- 2026-07-16 - live dictation waveform added - holding Alt now opens a compact always-on-top overlay driven by the real microphone level, with listening, processing, pasted, and error states
 
 ## Tombstone watch
 
